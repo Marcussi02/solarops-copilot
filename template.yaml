@@ -1,0 +1,168 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: SolarOps Copilot - live AEMO solar farm ingestion (Phase 1)
+
+Parameters:
+  DatabaseUrlParam:
+    Type: String
+    Default: solarops/database-url
+    Description: SSM SecureString (name without leading slash) holding the Postgres URL
+  OpenElectricityKeyParam:
+    Type: String
+    Default: solarops/openelectricity-api-key
+    Description: SSM SecureString (name without leading slash) holding the Open Electricity key
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [x86_64]
+    CodeUri: src/
+    MemorySize: 256
+    Timeout: 60
+    Environment:
+      Variables:
+        DATABASE_URL_PARAM: !Sub /${DatabaseUrlParam}
+        OPENELECTRICITY_API_KEY_PARAM: !Sub /${OpenElectricityKeyParam}
+        RAW_BUCKET: !Ref RawBucket
+        QUEUE_URL: !Ref IngestQueue
+
+Resources:
+  RawBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: TierThenExpireRawFiles
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+            ExpirationInDays: 365
+
+  IngestDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600 # 14 days
+
+  IngestQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 360 # 6x the worker timeout
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt IngestDLQ.Arn
+        maxReceiveCount: 5
+
+  PollFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: solarops.handlers.poll_handler
+      Description: Lists new NEMWeb SCADA files and queues them
+      Policies:
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt IngestQueue.QueueName
+        - SSMParameterReadPolicy:
+            ParameterName: !Ref DatabaseUrlParam
+      Events:
+        Every5Minutes:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: rate(5 minutes)
+
+  IngestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: solarops.handlers.ingest_handler
+      Description: Downloads, archives and loads one SCADA file per message
+      ReservedConcurrentExecutions: 2 # protects the database connection limit
+      Policies:
+        - S3WritePolicy:
+            BucketName: !Ref RawBucket
+        - SSMParameterReadPolicy:
+            ParameterName: !Ref DatabaseUrlParam
+      Events:
+        Queue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt IngestQueue.Arn
+            BatchSize: 5
+            MaximumBatchingWindowInSeconds: 10
+            FunctionResponseTypes: [ReportBatchItemFailures]
+
+  RegistryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: solarops.handlers.registry_handler
+      Description: Refreshes the solar farm registry
+      Policies:
+        - SSMParameterReadPolicy:
+            ParameterName: !Ref DatabaseUrlParam
+        - SSMParameterReadPolicy:
+            ParameterName: !Ref OpenElectricityKeyParam
+      Events:
+        Daily:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(0 18 * * ? *) # 04:00 NEM time
+
+  WeatherFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: solarops.handlers.weather_handler
+      Description: Records current irradiance at every solar farm
+      Policies:
+        - SSMParameterReadPolicy:
+            ParameterName: !Ref DatabaseUrlParam
+      Events:
+        Every15Minutes:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: rate(15 minutes)
+
+  DLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: SCADA files are failing ingestion repeatedly
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt IngestDLQ.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  IngestLagAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Ingest queue is backing up
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt IngestQueue.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 900
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  RawBucketName:
+    Value: !Ref RawBucket
+  IngestQueueUrl:
+    Value: !Ref IngestQueue
+  DeadLetterQueueUrl:
+    Value: !Ref IngestDLQ

@@ -1,0 +1,19 @@
+[project]
+name = "solarops-copilot"
+version = "0.1.0"
+description = "Live solar-farm telemetry, weather and performance analytics on AWS"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "tests"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["solarops", "conftest"]
