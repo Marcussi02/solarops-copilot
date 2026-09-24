@@ -99,3 +99,7 @@ Any Postgres works. A free Supabase or Neon database keeps it close to zero cost
 - [Open-Meteo](https://open-meteo.com) weather data (CC BY 4.0).
 
 This is an independent portfolio project, not affiliated with any of these organisations.
+
+## License
+
+[MIT](LICENSE) © 2026 Marcus Mah
