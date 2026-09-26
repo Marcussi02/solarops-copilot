@@ -72,8 +72,12 @@ jobs:
             --logical-resource-id RegistryFunction \
             --query StackResourceDetail.PhysicalResourceId --output text)
           aws lambda invoke --function-name "$fn" out.json >/dev/null
+          if grep -q errorMessage out.json; then
+            # Print only the error type: messages can quote configuration values.
+            python -c "import json; print('Registry load failed:', json.load(open('out.json')).get('errorType'), '(details in the RegistryFunction CloudWatch logs)')"
+            exit 1
+          fi
           cat out.json
-          ! grep -q errorMessage out.json
 
       - name: Smoke test
         run: |
