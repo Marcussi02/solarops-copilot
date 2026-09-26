@@ -19,7 +19,8 @@ from .types import ProviderError, ToolCall
 ROUTE_PROMPT = (
     "You route questions about Australian utility-scale solar farms (AEMO NEM data) to "
     "exactly one tool. NEM regions: NSW1, QLD1, VIC1, SA1, TAS1. Default to a 24 hour "
-    "window unless the question gives one. Always call a tool."
+    "window unless the question gives one. Use search_docs for definitions, causes, how "
+    "things work and troubleshooting advice. Always call a tool."
 )
 ANSWER_PROMPT = (
     "You are an operations analyst. Answer the question in at most four sentences using "
@@ -27,6 +28,18 @@ ANSWER_PROMPT = (
     "Performance index = actual / weather-expected output; below 0.6 means underperforming. "
     "Do not speculate about causes the data does not show."
 )
+
+
+DOCS_PROMPT = (
+    "You are a solar operations engineer. Answer the question in at most five sentences "
+    "using ONLY the numbered passages in the JSON tool result, and cite every claim with "
+    "the passage number in square brackets, like [1]. If the passages do not answer the "
+    "question, say that the knowledge base does not cover it."
+)
+
+
+def answer_prompt(call: ToolCall) -> str:
+    return DOCS_PROMPT if call.name == "search_docs" else ANSWER_PROMPT
 
 
 def _answer_input(question: str, call: ToolCall, result: dict) -> str:
@@ -81,7 +94,7 @@ class BedrockProvider:
         try:
             resp = self.client.converse(
                 modelId=self.model_id,
-                system=[{"text": ANSWER_PROMPT}],
+                system=[{"text": answer_prompt(call)}],
                 messages=[
                     {"role": "user", "content": [{"text": _answer_input(question, call, result)}]}
                 ],
@@ -159,7 +172,7 @@ class OpenAIProvider:
         resp = self._call(
             {
                 "messages": [
-                    {"role": "system", "content": ANSWER_PROMPT},
+                    {"role": "system", "content": answer_prompt(call)},
                     {"role": "user", "content": _answer_input(question, call, result)},
                 ],
                 "max_tokens": 300,

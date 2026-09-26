@@ -5,19 +5,26 @@
 If the provider errors, times out, or proposes an invalid tool call, the
 deterministic router takes over for that step. The response records which
 provider answered and why a fallback happened, so failures stay observable.
+
+Knowledge answers (search_docs) must cite the passages they use as [n]. A model
+answer with no citation, or one citing a passage it was not given, is rejected
+and replaced by the extractive answer, so every claim traces to a source.
+Diagnostic questions about live data ("why is X low?") also get related guidance
+from the knowledge base attached as sources.
 """
 
 import logging
+import re
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 
 import psycopg
 
 from .. import queries
 from . import tools
 from .llm import get_provider
-from .router import RuleBasedProvider
-from .types import ToolCall
+from .router import DIAGNOSTIC, RuleBasedProvider
+from .types import ProviderError, ToolCall
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +41,27 @@ class Answer:
     provider: str
     fallback_reason: str | None
     latency_ms: int
+    sources: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def _sources(result: dict) -> list[dict]:
+    return [
+        {"n": r["n"], "id": r["id"], "title": r["title"], "section": r["section"]}
+        for r in result.get("results", [])
+    ]
+
+
+def check_citations(text: str, result: dict) -> None:
+    """Raise if a knowledge answer cites nothing, or cites a passage it was not given."""
+    cited = {int(n) for n in re.findall(r"\[(\d+)\]", text)}
+    given = {r["n"] for r in result.get("results", [])}
+    if given and not cited:
+        raise ProviderError("answer cites no passages")
+    if cited - given:
+        raise ProviderError(f"answer cites unknown passages {sorted(cited - given)}")
 
 
 def ask(conn: psycopg.Connection, question: str, provider=None) -> Answer:
@@ -64,10 +89,21 @@ def ask(conn: psycopg.Connection, question: str, provider=None) -> Answer:
 
     try:
         text = answerer.summarise(question, call, result)
+        if call.name == "search_docs":
+            check_citations(text, result)
     except Exception as exc:
         fallback_reason = fallback_reason or f"{type(exc).__name__}: {exc}"[:300]
         answerer = rules
         text = rules.summarise(question, call, result)
+
+    sources = _sources(result) if call.name == "search_docs" else []
+    if call.name != "search_docs" and DIAGNOSTIC.search(question.lower()):
+        guidance = tools.run_tool(conn, "search_docs", {"query": question, "k": 3})
+        sources = _sources(guidance)
+        if sources:
+            text += " Related guidance: " + "; ".join(
+                f"{s['title']} - {s['section']} [{s['n']}]" for s in sources
+            ) + "."
 
     return Answer(
         question=question,
@@ -78,4 +114,5 @@ def ask(conn: psycopg.Connection, question: str, provider=None) -> Answer:
         provider=answerer.name,
         fallback_reason=fallback_reason,
         latency_ms=round((time.perf_counter() - started) * 1000),
+        sources=sources,
     )

@@ -8,6 +8,8 @@ providers sit on top of it and fall back to it whenever they fail.
 import re
 from datetime import datetime, timedelta
 
+from ..rag import get_retriever
+from ..rag.lexical import tokenize
 from .types import ToolCall
 
 _REGIONS = [
@@ -24,6 +26,29 @@ _UNDER = re.compile(
 _LIST = re.compile(
     r"\blist\b|which (solar )?farms|what (solar )?farms|how many (solar )?farms|"
     r"show (me )?(the |all )?(solar )?farms|\bfind\b"
+)
+# Knowledge questions: definitions, causes, how things work, what to do.
+_DOCS = re.compile(
+    r"\bhow (do|does|should|can|to|is|are)\b|\bwhat (is|are|does|do|causes?|should)\b|"
+    r"\bwhat's (a|an|the)\b|\bwhy\b|\bexplain|\bmean(s|ing)?\b|\bdefin|troubleshoot|"
+    r"checklist|runbook|procedure|\bsteps?\b|\bguid(e|ance)\b|\bwhen (is|should|do)\b|"
+    r"\btell me about\b|\bdifference between\b|\bis (it|that|this) (a|normal)\b"
+)
+# A question about a specific time window wants live numbers, even if it says "why".
+_LIVE = re.compile(
+    r"\b(right now|now|currently|today|tonight|at the moment|latest|"
+    r"this (morning|afternoon|evening|week)|(last|past) (\d+|hour|day|week))\b"
+)
+# Words that ask for numbers about the fleet rather than for an explanation.
+_FLEET = re.compile(
+    r"\b(energy|mwh|generat\w*|total|fleet|summary|compare|market|happened|overall|doing)\b|"
+    r"\d+\s*(hours?|hrs?|days?)\b|\bweek\b"
+)
+_DATA_ASK = re.compile(r"\b(which|any|show|list|worst|farms)\b")
+# Diagnostic phrasing: answer with data, then attach relevant guidance.
+DIAGNOSTIC = re.compile(
+    r"\bwhy\b|\bcause|\breason|what should i (check|do)|"
+    r"how (do|can|should) i (fix|check|investigate)|troubleshoot"
 )
 _NAME_NOISE = re.compile(r"\b(solar|farm|park|power|station|plant|hub|project|sf|pv)\b")
 
@@ -90,13 +115,18 @@ class RuleBasedProvider:
         facility = match_facility(q, context.get("facilities", []))
         if facility:
             return ToolCall("facility_performance", {"facility": facility, "hours": parse_hours(q)})
-        if _UNDER.search(q):
+        if _DOCS.search(q) and not _LIVE.search(q):
+            return ToolCall("search_docs", {"query": question, "k": 4})
+        if _UNDER.search(q) and (region or _LIVE.search(q) or _DATA_ASK.search(q)):
             args: dict = {"region": region}
             if (threshold := parse_threshold(q)) is not None:
                 args["threshold"] = threshold
             return ToolCall("underperformers", args)
         if _LIST.search(q):
             return ToolCall("find_facilities", {"region": region})
+        if not (region or _LIVE.search(q) or _FLEET.search(q)) and get_retriever().search(q, 1):
+            # No sign of a data question, and the knowledge base has something on it.
+            return ToolCall("search_docs", {"query": question, "k": 4})
         return ToolCall("fleet_summary", {"hours": parse_hours(q), "region": region})
 
     def summarise(self, question: str, call: ToolCall, result: dict) -> str:
@@ -114,7 +144,34 @@ def _pct(value) -> str:
     return "n/a" if value is None else f"{value * 100:.0f}%"
 
 
+def _best_sentences(text: str, terms: set[str], n: int = 2) -> list[str]:
+    """The n sentences sharing the rarest query terms, kept in document order."""
+    idf = get_retriever().bm25.idf
+    sentences = [s for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s]
+    overlap = [sum(idf.get(t, 0.0) for t in terms & set(tokenize(s))) for s in sentences]
+    best = sorted(range(len(sentences)), key=lambda i: (-overlap[i], i))[:n]
+    return [sentences[i] for i in sorted(best)]
+
+
+def summarise_docs(result: dict, max_sources: int = 2) -> str:
+    """Extractive answer: the most relevant sentences of the top passages, cited [n]."""
+    results = result.get("results", [])
+    if not results:
+        return "I couldn't find anything about that in the knowledge base."
+    terms = set(tokenize(result.get("query", ""), expand=True))
+    top = results[0]["score"] or 1.0
+    parts = []
+    for r in results[:max_sources]:
+        if r is not results[0] and r["score"] < 0.5 * top:
+            break  # a much weaker match adds noise, not evidence
+        n = 3 if r is results[0] else 2
+        parts.append(" ".join(_best_sentences(r["text"], terms, n)) + f" [{r['n']}]")
+    return " ".join(parts)
+
+
 def summarise(call: ToolCall, result: dict) -> str:
+    if call.name == "search_docs":
+        return summarise_docs(result)
     if call.name == "underperformers":
         farms = result.get("farms", [])
         where = f" in {result['region']}" if result.get("region") else ""

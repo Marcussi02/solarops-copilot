@@ -99,3 +99,25 @@ def test_ttl_cache_evicts_oldest_when_full():
     for key in ("a", "b", "c"):
         cache.get_or_set((key,), lambda k=key: k)
     assert cache.get_or_set(("a",), lambda: "recomputed") == "recomputed"
+
+
+def test_docs_search_returns_cited_passages(client):
+    assert client.get("/v1/docs/search?q=curtailment").status_code == 401
+    body = client.get("/v1/docs/search?q=negative%20prices&k=2", headers=KEY).json()
+    assert body["results"][0]["id"] == "curtailment#economic-curtailment-at-negative-prices"
+    assert [r["n"] for r in body["results"]] == [1, 2] and body["corpus_version"]
+    assert client.get("/v1/docs/search?q=x", headers=KEY).status_code == 422
+
+
+def test_docs_lists_documents_and_sections(client):
+    docs = client.get("/v1/docs", headers=KEY).json()["documents"]
+    assert {"curtailment", "alarm-triage"} <= {d["id"] for d in docs}
+    assert all(d["sections"] for d in docs)
+
+
+def test_ask_knowledge_question_returns_sources(client):
+    body = client.post("/v1/ask", json={"question": "What is economic curtailment?"},
+                       headers=KEY).json()
+    assert body["tool"] == "search_docs" and body["sources"]
+    assert body["sources"][0]["id"].startswith("curtailment#")
+    assert "[1]" in body["answer"]

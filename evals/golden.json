@@ -31,6 +31,14 @@
     {"question": "List all solar farms in NSW", "expect": {"tool": "find_facilities", "args": {"region": "NSW1"}}},
     {"question": "Which farms are in Queensland?", "expect": {"tool": "find_facilities", "args": {"region": "QLD1"}}},
     {"question": "How many solar farms are there?", "expect": {"tool": "find_facilities", "args": {"region": null}}},
-    {"question": "Find farms in Victoria", "expect": {"tool": "find_facilities", "args": {"region": "VIC1"}}}
+    {"question": "Find farms in Victoria", "expect": {"tool": "find_facilities", "args": {"region": "VIC1"}}},
+    {"question": "What is economic curtailment?", "expect": {"tool": "search_docs", "args": {}}},
+    {"question": "Why would an inverter trip on insulation resistance?", "expect": {"tool": "search_docs", "args": {}}},
+    {"question": "How does backtracking work on single-axis trackers?", "expect": {"tool": "search_docs", "args": {}}},
+    {"question": "What does a performance index of 0.5 mean?", "expect": {"tool": "search_docs", "args": {}}},
+    {"question": "Explain the difference between clipping and curtailment", "expect": {"tool": "search_docs", "args": {}}},
+    {"question": "What should I check first when a farm is flagged?", "expect": {"tool": "search_docs", "args": {}}},
+    {"question": "Why are farms in SA underperforming right now?", "expect": {"tool": "underperformers", "args": {"region": "SA1"}}},
+    {"question": "How is Victoria doing this afternoon?", "expect": {"tool": "fleet_summary", "args": {"region": "VIC1"}}}
   ]
 }

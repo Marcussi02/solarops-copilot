@@ -52,6 +52,7 @@ On GitHub, go to the repo → **Settings** → *Secrets and variables* → **Act
 | `AWS_DEPLOY_ROLE_ARN` | The ARN from step 2 (required) |
 | `ALARM_EMAIL` | Optional. The address for DLQ, backlog and API-error alarms. |
 | `LLM_PROVIDER` | Optional. `none` (default) or `bedrock`, see step 6. |
+| `EMBEDDINGS_PROVIDER` | Optional. `none` (default, BM25 keyword retrieval) or `bedrock` for hybrid retrieval with Titan Text Embeddings v2. |
 
 These are *variables*, not secrets, because none of them are sensitive. The actual secrets stay in SSM.
 
