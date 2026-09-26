@@ -52,3 +52,23 @@ def test_performance_index_ignores_low_light():
     assert performance_index(60, 80, 100) == pytest.approx(0.75)
     assert performance_index(1, 2, 100) is None  # expected < 5% of capacity
     assert performance_index(-1, 80, 100) == 0
+
+
+def test_fetch_recent_centres_hourly_means_and_drops_future():
+    payload = {
+        "hourly": {
+            "time": ["2026-09-25T01:00", "2026-09-25T02:00", "2026-09-25T03:00"],
+            "shortwave_radiation": [600.0, 800.0, 900.0],
+            "temperature_2m": [20.0, 21.0, 22.0],
+            "cloud_cover": [5, 10, 0],
+        }
+    }
+    now = datetime(2026, 9, 25, 2, 30, tzinfo=UTC)
+    obs = weather.fetch_recent([weather.Site("A", -30, 145)], 3, fetch=lambda u: payload, now=now)
+    assert [o.observed_at.strftime("%H:%M") for o in obs] == ["00:30", "01:30"]
+    assert [o.ghi_wm2 for o in obs] == [600.0, 800.0]
+
+
+def test_recent_url_requests_hourly_history():
+    url = weather.build_recent_url([weather.Site("A", -30, 145)], 6)
+    assert "past_hours=6" in url and "hourly=shortwave_radiation" in url
