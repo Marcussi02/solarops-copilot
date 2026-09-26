@@ -6,6 +6,7 @@ providers sit on top of it and fall back to it whenever they fail.
 """
 
 import re
+from datetime import datetime, timedelta
 
 from .types import ToolCall
 
@@ -102,6 +103,13 @@ class RuleBasedProvider:
         return summarise(call, result)
 
 
+def _nem_time(iso: str | None) -> str:
+    """'2026-09-26T07:30:00+00:00' -> '17:30 AEST' (NEM time is fixed UTC+10)."""
+    if not iso:
+        return "the latest interval"
+    return (datetime.fromisoformat(iso) + timedelta(hours=10)).strftime("%H:%M AEST")
+
+
 def _pct(value) -> str:
     return "n/a" if value is None else f"{value * 100:.0f}%"
 
@@ -113,14 +121,18 @@ def summarise(call: ToolCall, result: dict) -> str:
         if not farms:
             return (
                 f"No farms{where} are below {_pct(result.get('threshold'))} of expected output "
-                "at the latest interval (or it is night, when the index is not scored)."
+                "at the latest daylight interval."
             )
         top = "; ".join(
             f"{f['facility_name']} ({f['region']}) at {_pct(f['performance_index'])}"
             f" - {f['actual_mw']} MW vs {f['expected_mw']} MW expected"
             for f in farms[:5]
         )
-        return f"{len(farms)} farm(s){where} below {_pct(result['threshold'])} of expected: {top}."
+        at = _nem_time(farms[0].get("interval_end"))
+        return (
+            f"At {at}, {len(farms)} farm(s){where} were below "
+            f"{_pct(result['threshold'])} of expected: {top}."
+        )
     if call.name == "facility_performance":
         fac = result.get("facility")
         if not fac:
@@ -142,7 +154,7 @@ def summarise(call: ToolCall, result: dict) -> str:
         parts = "; ".join(
             f"{r['region']} {r['energy_mwh']} MWh from {r['facilities']} farms "
             f"(avg index {_pct(r['avg_performance_index'])}, "
-            f"{r['underperforming_now']} flagged now)"
+            f"{r['underperforming_latest']} flagged at last daylight interval)"
             for r in regions
         )
         return f"Last {result['hours']} h: {total:.1f} MWh in total. {parts}."
