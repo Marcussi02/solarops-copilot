@@ -5,6 +5,7 @@
     python -m solarops.cli status
     python -m solarops.cli underperformers
     python -m solarops.cli ask "which farms in QLD are underperforming?"
+    python -m solarops.cli docs "how do I tell curtailment from a fault?"   (no database)
 """
 
 import argparse
@@ -25,9 +26,19 @@ def main(argv: list[str] | None = None) -> None:
     ask = sub.add_parser("ask", help="ask the copilot a question")
     ask.add_argument("question")
     ask.add_argument("--provider", default=None, help="none | bedrock | openai")
+    docs = sub.add_parser("docs", help="search the operations knowledge base")
+    docs.add_argument("query")
+    docs.add_argument("-k", type=int, default=4)
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    if args.command == "docs":
+        from .rag import get_retriever
+
+        for n, hit in enumerate(get_retriever().search(args.query, args.k), start=1):
+            print(f"[{n}] {hit.chunk.heading}  ({hit.method} {hit.score:.2f})  {hit.chunk.id}")
+            print(f"    {hit.chunk.text[:220]}...")
+        return
     conn = db.connect(config.database_url())
     db.migrate(conn)
 

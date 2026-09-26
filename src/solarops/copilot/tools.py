@@ -14,6 +14,7 @@ import psycopg
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .. import queries
+from ..rag import get_retriever
 
 Region = Literal["NSW1", "QLD1", "VIC1", "SA1", "TAS1"]
 
@@ -53,6 +54,13 @@ class FindArgs(_Args):
     region: Region | None = Field(None, description="NEM region code, or null for all regions")
 
 
+class SearchDocsArgs(_Args):
+    query: str = Field(
+        min_length=3, max_length=300, description="What to look up, in the user's own words"
+    )
+    k: int = Field(4, ge=1, le=8, description="Number of passages to return")
+
+
 @dataclass(frozen=True)
 class Tool:
     name: str
@@ -84,6 +92,16 @@ def _find(conn, a: FindArgs) -> dict:
     return {"region": a.region, "count": len(rows), "facilities": rows[:50]}
 
 
+def _search_docs(conn, a: SearchDocsArgs) -> dict:
+    retriever = get_retriever()
+    hits = retriever.search(a.query, a.k)
+    return {
+        "query": a.query,
+        "corpus_version": retriever.version,
+        "results": [h.to_dict(n) for n, h in enumerate(hits, start=1)],
+    }
+
+
 TOOLS: dict[str, Tool] = {
     t.name: t
     for t in (
@@ -112,6 +130,15 @@ TOOLS: dict[str, Tool] = {
             "List solar farms (name, region, capacity), optionally for one region.",
             FindArgs,
             _find,
+        ),
+        Tool(
+            "search_docs",
+            "Search the operations knowledge base: curtailment and dispatch, inverter faults, "
+            "trackers, soiling and degradation, clipping, irradiance, NEM data, how the "
+            "performance index works, the alarm triage runbook and maintenance. Use for how, "
+            "why and what-is questions and troubleshooting advice, not for live numbers.",
+            SearchDocsArgs,
+            _search_docs,
         ),
     )
 }

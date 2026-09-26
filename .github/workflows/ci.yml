@@ -32,5 +32,7 @@ jobs:
         run: cfn-lint template.yaml infra/bootstrap.yaml
       - name: Copilot routing evals (golden set gate)
         run: PYTHONPATH=src python -m solarops.evals --min-accuracy 1.0
+      - name: Knowledge-base retrieval evals (hit@3 gate)
+        run: PYTHONPATH=src python -m solarops.rag.evaluate --min-hit-at-3 0.9
       - name: Test (unit + Postgres integration)
         run: pytest -v

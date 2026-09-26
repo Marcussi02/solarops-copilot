@@ -6,6 +6,8 @@
     GET  /v1/facilities/{code}         one farm: energy, peak, performance, hourly profile
     GET  /v1/underperformers           farms below expected output right now
     GET  /v1/fleet                     energy and performance per region
+    GET  /v1/docs                      knowledge base documents and sections
+    GET  /v1/docs/search?q=            retrieve cited passages from the knowledge base
     POST /v1/ask                       natural-language question -> grounded answer
 
 /v1 routes need an `x-api-key` header when API_KEY is configured. Rate limiting is
@@ -29,10 +31,11 @@ from pydantic import BaseModel, Field
 from . import config, db, queries
 from .copilot import agent
 from .copilot.tools import Region
+from .rag import get_retriever
 
 app = FastAPI(
     title="SolarOps Copilot API",
-    version="0.2.0",
+    version="0.3.0",
     description="Live performance of Australian utility-scale solar farms (AEMO NEM data).",
 )
 
@@ -171,6 +174,37 @@ def fleet(
     return cached(
         response, ("fleet", hours, region), lambda: queries.fleet_summary(conn, hours, region)
     )
+
+
+@v1.get("/docs", tags=["knowledge"])
+def list_docs(response: Response):
+    def build():
+        retriever = get_retriever()
+        docs: dict[str, dict] = {}
+        for c in retriever.chunks:
+            docs.setdefault(c.doc, {"id": c.doc, "title": c.title, "sections": []})
+            docs[c.doc]["sections"].append({"id": c.id, "section": c.section})
+        return {"corpus_version": retriever.version, "documents": list(docs.values())}
+
+    return cached(response, ("docs",), build)
+
+
+@v1.get("/docs/search", tags=["knowledge"])
+def search_docs(
+    response: Response,
+    q: Annotated[str, Query(min_length=3, max_length=300)],
+    k: Annotated[int, Query(ge=1, le=8)] = 4,
+):
+    def build():
+        retriever = get_retriever()
+        hits = retriever.search(q, k)
+        return {
+            "query": q,
+            "corpus_version": retriever.version,
+            "results": [h.to_dict(n) for n, h in enumerate(hits, start=1)],
+        }
+
+    return cached(response, ("docs_search", q, k), build)
 
 
 class AskRequest(BaseModel):

@@ -24,6 +24,15 @@ Parameters:
     Type: String
     Default: apac.amazon.nova-lite-v1:0
     Description: Bedrock model or inference profile ID, used when LlmProvider=bedrock
+  EmbeddingsProvider:
+    Type: String
+    Default: none
+    AllowedValues: [none, bedrock, openai]
+    Description: Dense embeddings for hybrid knowledge-base retrieval. "none" uses BM25 only (free).
+  BedrockEmbedModelId:
+    Type: String
+    Default: amazon.titan-embed-text-v2:0
+    Description: Bedrock embedding model, used when EmbeddingsProvider=bedrock
   OpenAIKeyParam:
     Type: String
     Default: solarops/openai-api-key
@@ -195,7 +204,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       Handler: solarops.api.handler
-      Description: Read-only HTTP API and tool-calling copilot
+      Description: Read-only HTTP API, tool-calling copilot and knowledge-base retrieval
       MemorySize: 512
       Timeout: 29
       Environment:
@@ -203,6 +212,8 @@ Resources:
           API_KEY_PARAM: !Sub /${ApiKeyParam}
           LLM_PROVIDER: !Ref LlmProvider
           BEDROCK_MODEL_ID: !Ref BedrockModelId
+          EMBEDDINGS_PROVIDER: !Ref EmbeddingsProvider
+          BEDROCK_EMBED_MODEL_ID: !Ref BedrockEmbedModelId
           OPENAI_API_KEY_PARAM: !Sub /${OpenAIKeyParam}
           CACHE_TTL_SECONDS: "60"
       Policies:

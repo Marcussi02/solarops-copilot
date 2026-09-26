@@ -35,7 +35,7 @@ Real response from a run on live AEMO data (26 Sep 2026):
 
 The same run answered *"How did the fleet do in the last 8 hours?"* with **37,907.7 MWh from 114 farms across NSW, QLD, VIC and SA**. It ingested 96 five-minute files (11,712 readings) in about 100 seconds.
 
-> **Status:** Phase 1 (ingestion) ✅ · Phase 2 (API, copilot, evals, AWS deploy) ✅ · Next: RAG over equipment manuals. See the [Roadmap](#roadmap).
+> **Status:** Phase 1 (ingestion) ✅ · Phase 2 (API, copilot, evals, AWS deploy) ✅ · Phase 3 (RAG over an O&M knowledge base, with citations and retrieval evals) ✅ · Next: MCP server. See the [Roadmap](#roadmap).
 
 ## Architecture
 
@@ -72,7 +72,7 @@ question ──► provider.choose_tool ──► validate (pydantic bounds) ─
                      └──────────────────────► deterministic router ◄──────────────────┘
 ```
 
-- **Tool calling over a fixed query catalogue, not text-to-SQL.** The model picks one of four tools (`underperformers`, `facility_performance`, `fleet_summary`, `find_facilities`) and proposes arguments. It never writes SQL, so it can't touch tables it shouldn't or run an expensive query.
+- **Tool calling over a fixed query catalogue, not text-to-SQL.** The model picks one of five tools (`underperformers`, `facility_performance`, `fleet_summary`, `find_facilities`, and `search_docs` for the [knowledge base](#knowledge-base-rag)) and proposes arguments. It never writes SQL, so it can't touch tables it shouldn't or run an expensive query.
 - **Every argument is validated** by a pydantic model with hard bounds (hours 1–168, known regions only, unknown fields rejected). A bad proposal is recorded and handed to the fallback, never executed.
 - **Answers are grounded.** The summarising model only sees the tool's JSON result and is told to use only those numbers. The response returns the tool, arguments and raw data too, so every answer can be audited.
 - **Pluggable providers.** `LLM_PROVIDER=none` (default) uses a deterministic router with template answers: free, offline, and the floor that CI tests. `bedrock` uses the Amazon Bedrock Converse API with native tool use (Nova Lite by default). `openai` uses Chat Completions. Switching is one parameter.
@@ -81,7 +81,7 @@ question ──► provider.choose_tool ──► validate (pydantic bounds) ─
 
 ### Evals
 
-[`evals/golden.json`](evals/golden.json) holds 23 real-world phrasings, each mapped to the tool call it should produce: the right farm, window, region and threshold. Routing is where copilots fail in practice (the wrong farm, or a region silently dropped), and it can be scored without a database.
+[`evals/golden.json`](evals/golden.json) holds 31 real-world phrasings, each mapped to the tool call it should produce: the right farm, window, region and threshold. Routing is where copilots fail in practice (the wrong farm, or a region silently dropped), and it can be scored without a database.
 
 ```bash
 PYTHONPATH=src python -m solarops.evals                     # router: CI gate, must be 100%
@@ -89,6 +89,50 @@ PYTHONPATH=src python -m solarops.evals --provider bedrock  # score a real model
 ```
 
 CI fails if the router's score drops below 100%. The same harness scores any LLM provider, so model changes are measured, not guessed.
+
+## Knowledge base (RAG)
+
+Live numbers say *that* a farm is low; operators also need to know *why* and *what to check*. The copilot answers those questions from an operations knowledge base in [`src/solarops/knowledge`](src/solarops/knowledge): 10 documents covering curtailment and dispatch, inverter faults, trackers, soiling and degradation, clipping and export limits, irradiance, NEM data, how the performance index works, an alarm-triage runbook and maintenance planning.
+
+```
+question ──► router / model picks search_docs ──► BM25 (+ optional embeddings, fused with RRF)
+         ──► top passages, numbered [1]..[k] ──► answer that must cite them ──► citation check
+                                                         │ no citation / unknown [n]
+                                                         └──► extractive answer from the passages
+```
+
+- **Section-level chunks with stable IDs** (`curtailment#confirming-curtailment`). A section is one topic, which is the right unit for a citation, and stable IDs let evals and answers point at exactly the same thing.
+- **BM25 keyword retrieval by default**, in process and dependency-free: the index builds in about a millisecond at cold start and needs no vector database or API key. Operator shorthand (PR, POA, GHI, MLF, PID) is expanded at query time.
+- **Optional hybrid retrieval.** `EMBEDDINGS_PROVIDER=bedrock` (Titan Text Embeddings v2) or `openai` adds dense vectors, fused with the keyword ranking by reciprocal rank fusion. At a few dozen chunks, brute-force cosine in memory beats running pgvector. If embeddings fail, search degrades to keywords and reports `"method": "bm25"`.
+- **Citations are enforced, not requested.** A model answer that cites nothing, or cites a passage it wasn't given, is rejected and replaced by an extractive answer built from the passages, with `fallback_reason` explaining why.
+- **Data plus guidance.** Diagnostic questions about live data, such as *"Why are farms in NSW underperforming right now?"*, run the data tool and attach the relevant runbook sections as sources.
+
+Real answer from the offline router (no model, no API key):
+
+```json
+{
+  "question": "Why would a solar farm be dispatched down when prices go negative?",
+  "answer": "Solar farms typically offer energy at low or negative prices because their fuel is free, but many are not willing to generate at any price. When the regional price falls below the price at which a farm has offered its output, the farm is dispatched down and curtails itself. This is common around midday in South Australia and Victoria, when rooftop and utility solar exceed demand and prices go negative. [1]",
+  "tool": "search_docs",
+  "sources": [{"n": 1, "id": "curtailment#economic-curtailment-at-negative-prices", "title": "Curtailment and dispatch in the NEM", "section": "Economic curtailment at negative prices"}, "..."]
+}
+```
+
+### Retrieval evals
+
+[`evals/retrieval.json`](evals/retrieval.json) holds 36 operator questions, written before the retriever was tuned and phrased differently from the documents, each mapped to the sections that answer it.
+
+```bash
+PYTHONPATH=src python -m solarops.rag.evaluate                        # BM25: CI gate, hit@3 >= 0.9
+PYTHONPATH=src python -m solarops.rag.evaluate --embeddings bedrock   # score hybrid retrieval
+PYTHONPATH=src python -m solarops.cli docs "tracker rows stuck on a windy day"
+```
+
+| Retriever | hit@1 | hit@3 | MRR | p50 latency |
+|---|---|---|---|---|
+| BM25 (default) | 0.86 | 1.00 | 0.93 | < 0.1 ms |
+
+The first untuned run scored hit@3 0.97. The one miss exposed a stemming bug ("prices" and "price" didn't match), and fixing it took hit@3 to 1.00. A test also checks that every question in the set routes to `search_docs`, so knowledge questions never fall through to a data query.
 
 ## API
 
@@ -106,7 +150,9 @@ Live deployment: [interactive docs](https://h12xi690he.execute-api.ap-southeast-
 | `GET /v1/facilities/{code}?hours=24` | Energy, peak, performance index and hourly profile for one farm |
 | `GET /v1/underperformers?threshold=0.6&region=` | Farms below expected output at the latest interval |
 | `GET /v1/fleet?hours=24&region=` | Energy and average performance per NEM region |
-| `POST /v1/ask` | Natural-language question → grounded answer with trace |
+| `GET /v1/docs` | Knowledge-base documents and their sections |
+| `GET /v1/docs/search?q=&k=4` | Top passages for a query, numbered for citation, with the corpus version |
+| `POST /v1/ask` | Natural-language question → grounded answer with trace and `sources` |
 
 ## Design decisions
 
@@ -121,6 +167,7 @@ Live deployment: [interactive docs](https://h12xi690he.execute-api.ap-southeast-
 | **Explainable performance model**: `expected = capacity × GHI/1000 × 0.8`, scored only when GHI ≥ 200 W/m² (IEC 61724-style filter) | Simple enough to reason about in an incident. The irradiance filter removed false dusk alerts seen in live data. |
 | **Weather matched to the nearest observation (±30 min)**, with an hourly backfill stored at mid-hour | A missed poll no longer leaves intervals unscored, and a sunny-afternoon average is never applied at dusk. |
 | **Tool calling with validated arguments**, deterministic fallback, golden-set evals in CI | The AI layer is testable, auditable and still works when the model doesn't. |
+| **RAG with BM25 by default, embeddings optional**, section-level chunks, enforced citations, retrieval evals in CI | Small, curated corpus: keyword search is fast, free and hard to beat, and hybrid is one parameter away. Rejecting uncited answers keeps every claim traceable. |
 | **Throttling at API Gateway**, in-process 60 s cache, `Cache-Control` headers | Data changes every 5 minutes, so rate limiting happens before any Lambda runs and repeated reads are cheap. |
 | **Keyless deploys**: GitHub OIDC → short-lived IAM role scoped to this stack | No AWS access keys exist anywhere. The role can't edit its own permissions. |
 | **Secrets in SSM Parameter Store**, least-privilege IAM for each function | No credentials in code or environment files. |
@@ -174,7 +221,8 @@ These are deliberate simplifications, found and measured against live data:
 - [x] **Phase 1: data platform.** Event-driven ingestion, idempotency, DLQ, archive, performance view.
 - [x] **Phase 2: API and copilot.** FastAPI on Lambda, API-key auth, throttling, caching, OpenAPI; a tool-calling copilot with pluggable models and a fallback; golden-set evals as a CI gate; keyless deploys with OIDC.
 - [ ] **Curtailment-aware scoring.** Join AEMO `DISPATCH_UNIT_SOLUTION` semi-dispatch caps so economic curtailment isn't reported as a fault.
-- [ ] **Phase 3: RAG.** Inverter manuals and datasheets in pgvector, hybrid search, citations.
+- [x] **Phase 3: RAG.** O&M knowledge base, BM25 with optional hybrid embeddings, enforced citations, retrieval evals as a CI gate.
+- [ ] **Manufacturer documents.** Ingest inverter and tracker manuals (PDF) for the specific equipment at each site, where licences allow.
 - [ ] **Phase 4: MCP server.** The same tool catalogue exposed over the Model Context Protocol.
 - [ ] **Phase 5: observability.** Tracing, and cost and latency dashboards for the copilot.
 

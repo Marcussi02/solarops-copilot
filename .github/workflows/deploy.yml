@@ -58,9 +58,10 @@ jobs:
       - name: Deploy
         env:
           LLM_PROVIDER: ${{ vars.LLM_PROVIDER || 'none' }}
+          EMBEDDINGS_PROVIDER: ${{ vars.EMBEDDINGS_PROVIDER || 'none' }}
           ALARM_EMAIL: ${{ vars.ALARM_EMAIL }}
         run: |
-          overrides="LlmProvider=${LLM_PROVIDER}"
+          overrides="LlmProvider=${LLM_PROVIDER} EmbeddingsProvider=${EMBEDDINGS_PROVIDER}"
           if [ -n "$ALARM_EMAIL" ]; then overrides="$overrides AlarmEmail=${ALARM_EMAIL}"; fi
           sam deploy --stack-name "$STACK" --resolve-s3 --capabilities CAPABILITY_IAM \
             --no-confirm-changeset --no-fail-on-empty-changeset \
@@ -90,4 +91,7 @@ jobs:
           curl -fsS -H "x-api-key: $key" -H "content-type: application/json" \
             -d '{"question":"Which solar farms are underperforming right now?"}' "$url/v1/ask" \
             | python -c "import json,sys; b=json.load(sys.stdin); print(b['answer']); print(b['provider'], b['tool'])"
+          curl -fsS -H "x-api-key: $key" -H "content-type: application/json" \
+            -d '{"question":"How can I tell if a farm was curtailed rather than faulty?"}' "$url/v1/ask" \
+            | python -c "import json,sys; b=json.load(sys.stdin); assert b['sources'], 'no sources'; print(b['answer']); print([s['id'] for s in b['sources']])"
           echo "API: $url  (docs: $url/docs)" >> "$GITHUB_STEP_SUMMARY"
