@@ -26,7 +26,7 @@ def get_conn() -> psycopg.Connection:
     """Reuse one connection per warm Lambda container."""
     global _conn
     if _conn is None or _conn.closed or _conn.broken:
-        _conn = db.connect(config.database_url())
+        _conn = db.connect_configured()
         db.migrate(_conn)
     return _conn
 

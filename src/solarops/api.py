@@ -42,7 +42,7 @@ _conn: psycopg.Connection | None = None
 
 
 def _open_read_only() -> psycopg.Connection:
-    conn = db.connect(config.database_url())
+    conn = db.connect_configured()
     conn.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
     conn.execute("SET statement_timeout = '5s'")
     conn.commit()

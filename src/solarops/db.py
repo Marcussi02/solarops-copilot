@@ -22,6 +22,19 @@ def connect(database_url: str) -> psycopg.Connection:
         raise ValueError("DATABASE_URL is not a valid PostgreSQL connection URL") from None
 
 
+def connect_configured() -> psycopg.Connection:
+    """Connect using DATABASE_URL (env or SSM). On failure, forget the cached secret so
+    a warm Lambda container re-reads it next time: a rotated or corrected password then
+    takes effect without a redeploy."""
+    from . import config
+
+    try:
+        return connect(config.database_url())
+    except Exception:
+        config.database_url.cache_clear()
+        raise
+
+
 # ---------- migrations ----------
 
 def migrate(conn: psycopg.Connection) -> list[str]:
