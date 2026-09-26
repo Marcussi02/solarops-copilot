@@ -2,7 +2,6 @@ import io
 import os
 import zipfile
 
-import psycopg
 import pytest
 
 from solarops import db
@@ -38,7 +37,7 @@ def conn():
     url = os.environ.get("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL not set")
-    connection = psycopg.connect(url)
+    connection = db.connect(url)
     with connection.transaction():
         connection.execute("DROP SCHEMA public CASCADE")
         connection.execute("CREATE SCHEMA public")

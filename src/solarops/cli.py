@@ -4,6 +4,7 @@
     python -m solarops.cli ingest --files 12
     python -m solarops.cli status
     python -m solarops.cli underperformers
+    python -m solarops.cli ask "which farms in QLD are underperforming?"
 """
 
 import argparse
@@ -21,6 +22,9 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("status", help="show pipeline status")
     under = sub.add_parser("underperformers", help="farms below expected output now")
     under.add_argument("--threshold", type=float, default=0.6)
+    ask = sub.add_parser("ask", help="ask the copilot a question")
+    ask.add_argument("question")
+    ask.add_argument("--provider", default=None, help="none | bedrock | openai")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -46,6 +50,14 @@ def main(argv: list[str] | None = None) -> None:
                 f"{r['facility_name']:<40} {r['region']:<5} actual {r['actual_mw']:>6} MW  "
                 f"expected {r['expected_mw']:>6} MW  index {r['performance_index']}"
             )
+    elif args.command == "ask":
+        from .copilot import agent, llm
+
+        answer = agent.ask(conn, args.question, llm.get_provider(args.provider))
+        print(answer.answer)
+        print(f"\n[{answer.provider}] {answer.tool} {answer.args} in {answer.latency_ms} ms")
+        if answer.fallback_reason:
+            print(f"fallback: {answer.fallback_reason}")
 
 
 if __name__ == "__main__":

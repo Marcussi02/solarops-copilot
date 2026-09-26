@@ -12,7 +12,10 @@ from .weather import Site, WeatherObs
 
 
 def connect(database_url: str) -> psycopg.Connection:
-    return psycopg.connect(database_url, autocommit=False, connect_timeout=10)
+    # UTC sessions: timestamps render identically everywhere and hourly buckets are UTC.
+    return psycopg.connect(
+        database_url, autocommit=False, connect_timeout=10, options="-c TimeZone=UTC"
+    )
 
 
 # ---------- migrations ----------
@@ -167,21 +170,27 @@ def underperformers(
     conn: psycopg.Connection, threshold: float = 0.6, limit: int = 10
 ) -> list[dict]:
     """Facilities below `threshold` of expected output at the latest interval."""
-    cur = conn.execute(
-        """
-        SELECT facility_code, facility_name, region, interval_end,
-               round(actual_mw::numeric, 1)   AS actual_mw,
-               round(expected_mw::numeric, 1) AS expected_mw,
-               round(performance_index::numeric, 2) AS performance_index
-        FROM facility_performance
-        WHERE interval_end = (SELECT max(interval_end) FROM scada_readings)
-          AND performance_index < %s
-        ORDER BY performance_index
-        LIMIT %s
-        """,
-        (threshold, limit),
-    )
-    cols = [c.name for c in cur.description]
-    rows = [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
-    conn.commit()
-    return rows
+    from . import queries
+
+    return queries.underperformers(conn, threshold, limit)
+
+
+# ---------- retention ----------
+
+def prune(conn: psycopg.Connection, days: int) -> dict:
+    """Delete telemetry older than `days`. Keeps a free-tier database within its quota.
+
+    The ingest ledger can be pruned too: NEMWeb only lists roughly the last two days
+    of files, so anything older can never be offered for ingestion again.
+    """
+    cutoff = "now() - make_interval(days => %s)"
+    deleted = {}
+    with conn.transaction():
+        for table, column in (
+            ("scada_readings", "interval_end"),
+            ("weather_obs", "observed_at"),
+            ("ingested_files", "interval_end"),
+        ):
+            cur = conn.execute(f"DELETE FROM {table} WHERE {column} < {cutoff}", (days,))
+            deleted[table] = cur.rowcount
+    return deleted

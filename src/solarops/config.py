@@ -30,6 +30,21 @@ def openelectricity_api_key() -> str | None:
     return _secret("OPENELECTRICITY_API_KEY", required=False)
 
 
+@lru_cache(maxsize=1)
+def api_key() -> str | None:
+    """Shared API key for /v1 routes. Unset locally means auth is disabled."""
+    return _secret("API_KEY", required=False)
+
+
+@lru_cache(maxsize=1)
+def openai_api_key() -> str | None:
+    return _secret("OPENAI_API_KEY", required=False)
+
+
+def retention_days() -> int:
+    return int(os.environ.get("RETENTION_DAYS", "30"))
+
+
 def raw_bucket() -> str | None:
     return os.environ.get("RAW_BUCKET")
 

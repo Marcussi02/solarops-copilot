@@ -4,6 +4,8 @@
                                                       \\-> S3 raw archive
     EventBridge (daily)  -> registry_handler
     EventBridge (15 min) -> weather_handler
+    EventBridge (daily)  -> retention_handler
+    API Gateway          -> solarops.api.handler (read-only API + copilot)
 """
 
 import json
@@ -78,3 +80,7 @@ def registry_handler(event, context):
 
 def weather_handler(event, context):
     return {"observations": pipeline.sync_weather(get_conn())}
+
+
+def retention_handler(event, context):
+    return db.prune(get_conn(), config.retention_days())

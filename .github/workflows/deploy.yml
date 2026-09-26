@@ -1,0 +1,80 @@
+name: Deploy
+
+# Runs after CI passes on main (or manually). Uses GitHub OIDC to assume a
+# short-lived AWS role: there are no AWS access keys stored anywhere.
+# Enable by setting the repository variable AWS_DEPLOY_ROLE_ARN (see infra/bootstrap.yaml).
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      vars.AWS_DEPLOY_ROLE_ARN != '' &&
+      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    env:
+      STACK: solarops-copilot
+      AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build
+        run: sam build
+
+      - name: Deploy
+        env:
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER || 'none' }}
+          ALARM_EMAIL: ${{ vars.ALARM_EMAIL }}
+        run: |
+          overrides="LlmProvider=${LLM_PROVIDER}"
+          if [ -n "$ALARM_EMAIL" ]; then overrides="$overrides AlarmEmail=${ALARM_EMAIL}"; fi
+          sam deploy --stack-name "$STACK" --resolve-s3 --capabilities CAPABILITY_IAM \
+            --no-confirm-changeset --no-fail-on-empty-changeset \
+            --parameter-overrides $overrides
+
+      - name: Refresh the solar farm registry
+        run: |
+          fn=$(aws cloudformation describe-stack-resource --stack-name "$STACK" \
+            --logical-resource-id RegistryFunction \
+            --query StackResourceDetail.PhysicalResourceId --output text)
+          aws lambda invoke --function-name "$fn" out.json >/dev/null
+          cat out.json
+          ! grep -q errorMessage out.json
+
+      - name: Smoke test
+        run: |
+          url=$(aws cloudformation describe-stacks --stack-name "$STACK" \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" --output text)
+          key=$(aws ssm get-parameter --name /solarops/api-key --with-decryption \
+            --query Parameter.Value --output text)
+          echo "::add-mask::$key"
+          curl -fsS "$url/health"
+          curl -fsS -H "x-api-key: $key" -H "content-type: application/json" \
+            -d '{"question":"Which solar farms are underperforming right now?"}' "$url/v1/ask" \
+            | python -c "import json,sys; b=json.load(sys.stdin); print(b['answer']); print(b['provider'], b['tool'])"
+          echo "API: $url  (docs: $url/docs)" >> "$GITHUB_STEP_SUMMARY"

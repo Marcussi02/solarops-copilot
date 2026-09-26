@@ -1,0 +1,36 @@
+{
+  "description": "Golden routing set: question -> expected tool call. Facility codes are test fixtures. Only the args listed are checked; a null region means 'all regions' and must not be narrowed.",
+  "facilities": [
+    ["BUNGALA", "Bungala Solar Farm"],
+    ["LIMOND", "Limondale Solar Farm"],
+    ["DARLSF", "Darlington Point Solar Farm"],
+    ["KIAMSF", "Kiamal Solar Farm"],
+    ["WDGPH", "Western Downs Green Power Hub"],
+    ["SMCSF", "Sun Metals Solar Farm"]
+  ],
+  "cases": [
+    {"question": "Which solar farms are underperforming right now?", "expect": {"tool": "underperformers", "args": {"region": null}}},
+    {"question": "Any farms in Queensland below expected output?", "expect": {"tool": "underperformers", "args": {"region": "QLD1"}}},
+    {"question": "Show me the worst performing farms in NSW", "expect": {"tool": "underperformers", "args": {"region": "NSW1"}}},
+    {"question": "Which farms are below 50% of expected?", "expect": {"tool": "underperformers", "args": {"threshold": 0.5}}},
+    {"question": "Are there any problems in South Australia?", "expect": {"tool": "underperformers", "args": {"region": "SA1"}}},
+    {"question": "farms losing output in vic in the last 3 hours", "expect": {"tool": "underperformers", "args": {"region": "VIC1"}}},
+    {"question": "How did Bungala do in the last 6 hours?", "expect": {"tool": "facility_performance", "args": {"facility": "BUNGALA", "hours": 6}}},
+    {"question": "Limondale performance today", "expect": {"tool": "facility_performance", "args": {"facility": "LIMOND", "hours": 24}}},
+    {"question": "How much energy did Darlington Point produce over the past 3 days?", "expect": {"tool": "facility_performance", "args": {"facility": "DARLSF", "hours": 72}}},
+    {"question": "Kiamal output this week", "expect": {"tool": "facility_performance", "args": {"facility": "KIAMSF", "hours": 168}}},
+    {"question": "What's the performance index for Western Downs over 12 hours?", "expect": {"tool": "facility_performance", "args": {"facility": "WDGPH", "hours": 12}}},
+    {"question": "What is the capacity of Sun Metals?", "expect": {"tool": "facility_performance", "args": {"facility": "SMCSF"}}},
+    {"question": "Is Bungala underperforming?", "expect": {"tool": "facility_performance", "args": {"facility": "BUNGALA"}}},
+    {"question": "Total solar generation in Victoria over the last 24 hours", "expect": {"tool": "fleet_summary", "args": {"region": "VIC1", "hours": 24}}},
+    {"question": "Give me a fleet summary for the past 2 days", "expect": {"tool": "fleet_summary", "args": {"hours": 48, "region": null}}},
+    {"question": "How much energy did the whole fleet generate this week?", "expect": {"tool": "fleet_summary", "args": {"hours": 168}}},
+    {"question": "Compare regions over the last 6 hours", "expect": {"tool": "fleet_summary", "args": {"hours": 6, "region": null}}},
+    {"question": "How is SA doing today?", "expect": {"tool": "fleet_summary", "args": {"region": "SA1", "hours": 24}}},
+    {"question": "What happened across the market in the last hour?", "expect": {"tool": "fleet_summary", "args": {"hours": 1}}},
+    {"question": "List all solar farms in NSW", "expect": {"tool": "find_facilities", "args": {"region": "NSW1"}}},
+    {"question": "Which farms are in Queensland?", "expect": {"tool": "find_facilities", "args": {"region": "QLD1"}}},
+    {"question": "How many solar farms are there?", "expect": {"tool": "find_facilities", "args": {"region": null}}},
+    {"question": "Find farms in Victoria", "expect": {"tool": "find_facilities", "args": {"region": "VIC1"}}}
+  ]
+}

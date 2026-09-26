@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: SolarOps Copilot - live AEMO solar farm ingestion (Phase 1)
+Description: SolarOps Copilot - live AEMO solar farm ingestion, read API and copilot
 
 Parameters:
   DatabaseUrlParam:
@@ -10,7 +10,36 @@ Parameters:
   OpenElectricityKeyParam:
     Type: String
     Default: solarops/openelectricity-api-key
-    Description: SSM SecureString (name without leading slash) holding the Open Electricity key
+    Description: SSM SecureString holding the Open Electricity key
+  ApiKeyParam:
+    Type: String
+    Default: solarops/api-key
+    Description: SSM SecureString holding the x-api-key clients must send to /v1 routes
+  LlmProvider:
+    Type: String
+    Default: none
+    AllowedValues: [none, bedrock, openai]
+    Description: Copilot model provider. "none" uses the deterministic router (free).
+  BedrockModelId:
+    Type: String
+    Default: apac.amazon.nova-lite-v1:0
+    Description: Bedrock model or inference profile ID, used when LlmProvider=bedrock
+  OpenAIKeyParam:
+    Type: String
+    Default: solarops/openai-api-key
+    Description: SSM SecureString holding an OpenAI key, used when LlmProvider=openai
+  RetentionDays:
+    Type: Number
+    Default: 30
+    MinValue: 3
+    Description: Days of telemetry to keep in Postgres (raw files stay in S3 for a year)
+  AlarmEmail:
+    Type: String
+    Default: ""
+    Description: Optional email address for alarm notifications
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
 
 Globals:
   Function:
@@ -27,6 +56,8 @@ Globals:
         QUEUE_URL: !Ref IngestQueue
 
 Resources:
+  # ---------------- ingestion (Phase 1) ----------------
+
   RawBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -82,7 +113,6 @@ Resources:
     Properties:
       Handler: solarops.handlers.ingest_handler
       Description: Downloads, archives and loads one SCADA file per message
-      ReservedConcurrentExecutions: 2 # protects the database connection limit
       Policies:
         - S3WritePolicy:
             BucketName: !Ref RawBucket
@@ -96,6 +126,10 @@ Resources:
             BatchSize: 5
             MaximumBatchingWindowInSeconds: 10
             FunctionResponseTypes: [ReportBatchItemFailures]
+            # Caps concurrent workers (protects DB connections) without reserving
+            # account concurrency, which new AWS accounts have very little of.
+            ScalingConfig:
+              MaximumConcurrency: 2
 
   RegistryFunction:
     Type: AWS::Serverless::Function
@@ -127,6 +161,87 @@ Resources:
           Properties:
             ScheduleExpression: rate(15 minutes)
 
+  RetentionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: solarops.handlers.retention_handler
+      Description: Deletes telemetry older than RetentionDays from Postgres
+      Environment:
+        Variables:
+          RETENTION_DAYS: !Ref RetentionDays
+      Policies:
+        - SSMParameterReadPolicy:
+            ParameterName: !Ref DatabaseUrlParam
+      Events:
+        Daily:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(30 17 * * ? *) # 03:30 NEM time
+
+  # ---------------- read API + copilot (Phase 2) ----------------
+
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      DefaultRouteSettings: # rate limiting at the edge, before any Lambda runs
+        ThrottlingBurstLimit: 20
+        ThrottlingRateLimit: 10
+      CorsConfiguration:
+        AllowOrigins: ["*"]
+        AllowMethods: [GET, POST]
+        AllowHeaders: [content-type, x-api-key]
+
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: solarops.api.handler
+      Description: Read-only HTTP API and tool-calling copilot
+      MemorySize: 512
+      Timeout: 29
+      Environment:
+        Variables:
+          API_KEY_PARAM: !Sub /${ApiKeyParam}
+          LLM_PROVIDER: !Ref LlmProvider
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+          OPENAI_API_KEY_PARAM: !Sub /${OpenAIKeyParam}
+          CACHE_TTL_SECONDS: "60"
+      Policies:
+        - SSMParameterReadPolicy:
+            ParameterName: !Ref DatabaseUrlParam
+        - SSMParameterReadPolicy:
+            ParameterName: !Ref ApiKeyParam
+        - SSMParameterReadPolicy:
+            ParameterName: !Ref OpenAIKeyParam
+        - Statement:
+            - Effect: Allow
+              Action: [bedrock:InvokeModel]
+              Resource:
+                - arn:aws:bedrock:*::foundation-model/*
+                - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*
+      Events:
+        Root:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /
+            Method: GET
+        Proxy:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /{proxy+}
+            Method: ANY
+
+  # ---------------- alarms ----------------
+
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Condition: HasAlarmEmail
+    Properties:
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref AlarmEmail
+
   DLQAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -142,6 +257,7 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmEmail, [!Ref AlarmTopic], !Ref AWS::NoValue]
 
   IngestLagAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -158,8 +274,29 @@ Resources:
       Threshold: 900
       ComparisonOperator: GreaterThanThreshold
       TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmEmail, [!Ref AlarmTopic], !Ref AWS::NoValue]
+
+  ApiErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The HTTP API is returning server errors
+      Namespace: AWS/ApiGateway
+      MetricName: 5xx
+      Dimensions:
+        - Name: ApiId
+          Value: !Ref HttpApi
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmEmail, [!Ref AlarmTopic], !Ref AWS::NoValue]
 
 Outputs:
+  ApiUrl:
+    Description: Base URL of the HTTP API (try /health and /docs)
+    Value: !Sub https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com
   RawBucketName:
     Value: !Ref RawBucket
   IngestQueueUrl:
