@@ -38,6 +38,15 @@ jobs:
       - uses: aws-actions/setup-sam@v2
         with:
           use-installer: true
+      - name: Show OIDC identity (non-secret claims only)
+        run: |
+          curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | python -c "
+          import sys, json, base64
+          jwt = json.load(sys.stdin)['value']
+          body = jwt.split('.')[1]; body += '=' * (-len(body) % 4)
+          c = json.loads(base64.urlsafe_b64decode(body))
+          print({k: c.get(k) for k in ('sub', 'aud', 'iss', 'repository', 'ref')})"
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
