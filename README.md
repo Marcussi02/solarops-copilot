@@ -94,6 +94,10 @@ CI fails if the router's score drops below 100%. The same harness scores any LLM
 
 OpenAPI docs are served at `/docs`. The `/v1` routes need an `x-api-key` header.
 
+Live deployment: [interactive docs](https://h12xi690he.execute-api.ap-southeast-2.amazonaws.com/docs) · [health check](https://h12xi690he.execute-api.ap-southeast-2.amazonaws.com/health)
+
+![OpenAPI docs for the SolarOps Copilot API](docs/api-docs.png)
+
 | Route | What it returns |
 |---|---|
 | `GET /health` | Liveness and data freshness (`data_lag_minutes`). Public. |
