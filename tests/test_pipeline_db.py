@@ -1,6 +1,6 @@
 """Integration tests against a real PostgreSQL (TEST_DATABASE_URL)."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from conftest import UNITS, make_scada_zip
 from solarops import db, nemweb, pipeline
@@ -106,3 +106,33 @@ def test_sync_weather_uses_one_site_per_facility(seeded):
 
     assert pipeline.sync_weather(seeded, fetch=fake_fetch) == 2
     assert sorted(seen) == ["OTHERSF", "TESTSF"]
+
+
+def test_backfill_weather_upserts_and_is_idempotent(seeded):
+    at = datetime(2026, 9, 25, 1, 30, tzinfo=UTC)
+
+    def fake(sites):
+        return [WeatherObs(s.facility_code, at, 750.0, 20.0, 5.0) for s in sites]
+
+    assert pipeline.backfill_weather(seeded, 3, fetch=fake) == 2
+    assert pipeline.backfill_weather(seeded, 3, fetch=fake) == 2
+    assert count(seeded, "weather_obs") == 2
+
+
+def test_performance_view_uses_nearest_weather_and_low_light_filter(seeded):
+    pipeline.process_file(seeded, FILE, download=lambda n: make_scada_zip(ROWS))
+    noon = datetime(2026, 9, 25, 2, 0, tzinfo=UTC)
+    db.upsert_weather(
+        seeded,
+        [
+            WeatherObs("TESTSF", noon - timedelta(minutes=50), 1000.0, 25.0, 0.0),  # too old
+            WeatherObs("TESTSF", noon + timedelta(minutes=10), 150.0, 25.0, 90.0),  # nearest
+        ],
+    )
+    row = seeded.execute(
+        "SELECT ghi_wm2, performance_index FROM facility_performance "
+        "WHERE facility_code = 'TESTSF'"
+    ).fetchone()
+    seeded.commit()
+    assert row[0] == 150.0  # nearest observation within 30 minutes wins
+    assert row[1] is None  # below 200 W/m2: not scored

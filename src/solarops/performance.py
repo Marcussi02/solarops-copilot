@@ -9,6 +9,8 @@ STC_IRRADIANCE_WM2 = 1000.0
 DEFAULT_PERFORMANCE_RATIO = 0.80
 # Below this share of capacity the ratio is too noisy to be meaningful (dawn, dusk, night).
 MIN_EXPECTED_SHARE = 0.05
+# Irradiance filter used by the database view (IEC 61724-style): no score below this.
+MIN_GHI_WM2 = 200.0
 
 
 def expected_mw(

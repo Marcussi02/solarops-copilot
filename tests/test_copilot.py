@@ -218,3 +218,26 @@ def test_prune_removes_only_old_rows(seeded):
     left = [r[0] for r in seeded.execute("SELECT mw FROM scada_readings").fetchall()]
     seeded.commit()
     assert left == [2.0]
+
+
+def test_bad_database_url_does_not_leak_password():
+    with pytest.raises(ValueError) as exc:
+        db.connect("postgresql://user:s3cret pass@host:5432/db")
+    assert "s3cret" not in str(exc.value)
+
+
+def test_underperformers_after_dark_reports_last_daylight_interval(loaded):
+    from solarops import queries
+
+    night = datetime(2026, 9, 25, 9, 0, tzinfo=UTC)  # 19:00 AEST
+    loaded.execute(
+        "INSERT INTO scada_readings VALUES ('TESTSF1', %s, 0), ('OTHERSF1', %s, 0)", (night, night)
+    )
+    loaded.commit()
+    db.upsert_weather(loaded, [WeatherObs("TESTSF", night, 0.0, 15.0, 0.0)])
+    rows = queries.underperformers(loaded)
+    assert [r["facility_code"] for r in rows] == ["TESTSF"]
+    assert rows[0]["interval_end"].hour == 2  # 12:00 AEST, the last scored interval
+    text = router.summarise(ToolCall("underperformers", {}), tools.jsonable(
+        {"threshold": 0.6, "region": None, "farms": rows}))
+    assert text.startswith("At 12:00 AEST")
