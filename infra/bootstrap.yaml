@@ -4,10 +4,20 @@ Description: >-
   and a monthly budget alert. Create this stack once in the AWS console.
 
 Parameters:
-  GitHubRepo:
+  GitHubOwner:
     Type: String
-    Default: Marcussi02/solarops-copilot
-    Description: owner/repo allowed to deploy (main branch only)
+    Default: Marcussi02
+  GitHubOwnerId:
+    Type: String
+    Default: "238744119"
+    Description: Numeric GitHub account ID (GitHub includes it in OIDC subjects)
+  GitHubRepoName:
+    Type: String
+    Default: solarops-copilot
+  GitHubRepoId:
+    Type: String
+    Default: "1385890882"
+    Description: Numeric repository ID (pins trust to this repo even if the name is reused)
   StackName:
     Type: String
     Default: solarops-copilot
@@ -52,7 +62,11 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:ref:refs/heads/main
+                # Main branch only. GitHub's subject format carries immutable owner and
+                # repo IDs; the legacy name-only format is accepted as well.
+                token.actions.githubusercontent.com:sub:
+                  - !Sub repo:${GitHubOwner}@${GitHubOwnerId}/${GitHubRepoName}@${GitHubRepoId}:ref:refs/heads/main
+                  - !Sub repo:${GitHubOwner}/${GitHubRepoName}:ref:refs/heads/main
       Policies:
         - PolicyName: deploy-solarops
           PolicyDocument:
