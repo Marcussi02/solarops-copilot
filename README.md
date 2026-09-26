@@ -16,20 +16,24 @@ It answers the core operations question, **is each farm producing what the weath
 
 ```bash
 curl -s -H "x-api-key: $KEY" -H "content-type: application/json" \
-  -d '{"question": "Which farms in Queensland are underperforming?"}' "$API/v1/ask"
+  -d '{"question": "How did Darlington Point do in the last 8 hours?"}' "$API/v1/ask"
 ```
+
+Real response from a run on live AEMO data (26 Sep 2026):
 
 ```json
 {
-  "answer": "2 farm(s) in QLD1 below 60% of expected: ...",
-  "tool": "underperformers",
-  "args": {"threshold": 0.6, "limit": 10, "region": "QLD1"},
-  "data": {"farms": [ ... rows from a fixed SQL query ... ]},
+  "answer": "Darlington Point (NSW1, 324.0 MW) produced 792.8 MWh in the last 8 h, peaking at 130.4 MW. Average performance index 95% (lowest 62%).",
+  "tool": "facility_performance",
+  "args": {"facility": "DARLSF", "hours": 8},
+  "data": {"facility": {...}, "summary": {...}, "hourly": [...]},
   "provider": "rules",
   "fallback_reason": null,
-  "latency_ms": 41
+  "latency_ms": 16
 }
 ```
+
+The same run answered *"How did the fleet do in the last 8 hours?"* with **37,907.7 MWh from 114 farms across NSW, QLD, VIC and SA**. It ingested 96 five-minute files (11,712 readings) in about 100 seconds.
 
 > **Status:** Phase 1 (ingestion) ✅ · Phase 2 (API, copilot, evals, AWS deploy) ✅ · Next: RAG over equipment manuals. See the [Roadmap](#roadmap).
 
@@ -110,7 +114,8 @@ OpenAPI docs are served at `/docs`. The `/v1` routes need an `x-api-key` header.
 | **Refuses to ingest while the registry is empty** | Otherwise every reading is filtered out and the file is wrongly marked done (a real bug found during development). |
 | **SQS `MaximumConcurrency: 2`** instead of reserved concurrency | Caps workers to protect Postgres connections without reserving account concurrency, which new AWS accounts have very little of. |
 | **Raw zip archived to S3** (Infrequent Access at 30 days, deleted at 365). **Postgres keeps 30 days.** | Replay or backfill from S3. A daily retention job keeps the database within the free tier. |
-| **Explainable performance model**: `expected = capacity × GHI/1000 × 0.8`, ignored below 5% of capacity | Simple enough to reason about in an incident. Suppresses dawn, dusk and night noise. |
+| **Explainable performance model**: `expected = capacity × GHI/1000 × 0.8`, scored only when GHI ≥ 200 W/m² (IEC 61724-style filter) | Simple enough to reason about in an incident. The irradiance filter removed false dusk alerts seen in live data. |
+| **Weather matched to the nearest observation (±30 min)**, with an hourly backfill stored at mid-hour | A missed poll no longer leaves intervals unscored, and a sunny-afternoon average is never applied at dusk. |
 | **Tool calling with validated arguments**, deterministic fallback, golden-set evals in CI | The AI layer is testable, auditable and still works when the model doesn't. |
 | **Throttling at API Gateway**, in-process 60 s cache, `Cache-Control` headers | Data changes every 5 minutes, so rate limiting happens before any Lambda runs and repeated reads are cheap. |
 | **Keyless deploys**: GitHub OIDC → short-lived IAM role scoped to this stack | No AWS access keys exist anywhere. The role can't edit its own permissions. |
@@ -133,7 +138,7 @@ python -m solarops.cli ask "How did the fleet do in the last 6 hours?"
 uvicorn solarops.api:app --reload           # API on http://localhost:8000/docs
 ```
 
-Tests: 61 unit and integration tests. The integration tests need a Postgres, and CI provides one.
+Tests: 67 unit and integration tests. The integration tests need a Postgres, and CI provides one.
 
 ```bash
 export TEST_DATABASE_URL=postgresql://solarops:solarops@localhost:5432/solarops
@@ -152,10 +157,19 @@ The workflow builds with SAM, deploys, loads the solar farm registry, and smoke-
 
 **Expected cost: about US$0/month.** Around 20k Lambda invocations a month, SQS, EventBridge Scheduler, SSM and three alarms all fit the AWS free tiers, and Supabase's free Postgres holds 30 days of telemetry. Bedrock, if you turn it on, costs fractions of a cent per question.
 
+## Known limitations
+
+These are deliberate simplifications, found and measured against live data:
+
+- **Curtailment isn't a fault.** Farms in the NEM often drop to 0 MW in full sun when prices go negative or AEMO caps them. The index flags these as underperforming. The fix is to join AEMO's semi-dispatch caps (see the roadmap).
+- **GHI, not plane-of-array irradiance.** Single-axis trackers collect more than horizontal irradiance, so tracking farms can score above 100%. A per-farm calibrated ratio, or transposition to plane-of-array, would tighten this.
+- **Hourly weather is coarse.** Fast-moving cloud shows up in the 5-minute output but not in hourly irradiance. Satellite irradiance would resolve it.
+
 ## Roadmap
 
 - [x] **Phase 1: data platform.** Event-driven ingestion, idempotency, DLQ, archive, performance view.
 - [x] **Phase 2: API and copilot.** FastAPI on Lambda, API-key auth, throttling, caching, OpenAPI; a tool-calling copilot with pluggable models and a fallback; golden-set evals as a CI gate; keyless deploys with OIDC.
+- [ ] **Curtailment-aware scoring.** Join AEMO `DISPATCH_UNIT_SOLUTION` semi-dispatch caps so economic curtailment isn't reported as a fault.
 - [ ] **Phase 3: RAG.** Inverter manuals and datasheets in pgvector, hybrid search, citations.
 - [ ] **Phase 4: MCP server.** The same tool catalogue exposed over the Model Context Protocol.
 - [ ] **Phase 5: observability.** Tracing, and cost and latency dashboards for the copilot.
