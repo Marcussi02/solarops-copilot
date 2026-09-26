@@ -13,9 +13,13 @@ from .weather import Site, WeatherObs
 
 def connect(database_url: str) -> psycopg.Connection:
     # UTC sessions: timestamps render identically everywhere and hourly buckets are UTC.
-    return psycopg.connect(
-        database_url, autocommit=False, connect_timeout=10, options="-c TimeZone=UTC"
-    )
+    try:
+        return psycopg.connect(
+            database_url, autocommit=False, connect_timeout=10, options="-c TimeZone=UTC"
+        )
+    except psycopg.ProgrammingError:
+        # Parse errors quote the connection string, which contains the password.
+        raise ValueError("DATABASE_URL is not a valid PostgreSQL connection URL") from None
 
 
 # ---------- migrations ----------
