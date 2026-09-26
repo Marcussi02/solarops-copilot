@@ -38,6 +38,8 @@ def main(argv: list[str] | None = None) -> None:
         for name in files:
             print(pipeline.process_file(conn, name))
         print(f"weather: {pipeline.sync_weather(conn)} observations")
+        hours = min(48, -(-args.files * 5 // 60) + 1)  # cover the ingested window
+        print(f"weather backfill ({hours} h): {pipeline.backfill_weather(conn, hours)} rows")
     elif args.command == "status":
         for key, value in db.status(conn).items():
             print(f"{key:>16}: {value}")

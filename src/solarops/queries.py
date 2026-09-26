@@ -83,16 +83,17 @@ def underperformers(
     limit: int = 10,
     region: str | None = None,
 ) -> list[dict]:
-    """Facilities below `threshold` of weather-expected output at the latest interval."""
+    """Facilities below `threshold` of weather-expected output at the latest scored
+    interval (the most recent one in daylight, so the answer is still useful at night)."""
     return _rows(
         conn,
-        """
+        f"""
         SELECT facility_code, facility_name, region, interval_end,
                round(actual_mw::numeric, 1)   AS actual_mw,
                round(expected_mw::numeric, 1) AS expected_mw,
                round(performance_index::numeric, 2) AS performance_index
         FROM facility_performance
-        WHERE interval_end = (SELECT max(interval_end) FROM scada_readings)
+        WHERE interval_end = ({_LATEST_SCORED})
           AND performance_index < %(threshold)s
           AND (%(region)s::text IS NULL OR region = %(region)s)
         ORDER BY performance_index
@@ -101,6 +102,14 @@ def underperformers(
         {"threshold": threshold, "limit": limit, "region": region},
     )
 
+
+# Most recent interval with a performance index (irradiance above the 5% floor),
+# searched within the last day only so the lookup stays cheap.
+_LATEST_SCORED = """
+    SELECT max(interval_end) FROM facility_performance
+    WHERE interval_end > (SELECT max(interval_end) FROM scada_readings) - interval '24 hours'
+      AND performance_index IS NOT NULL
+"""
 
 _WINDOW = """
     interval_end > (SELECT max(interval_end) FROM scada_readings)
@@ -156,14 +165,14 @@ def fleet_summary(conn: psycopg.Connection, hours: int, region: str | None = Non
         latest AS (
             SELECT region, count(*) FILTER (WHERE performance_index < %(threshold)s) AS n
             FROM win
-            WHERE interval_end = (SELECT max(interval_end) FROM scada_readings)
+            WHERE interval_end = ({_LATEST_SCORED})
             GROUP BY region
         )
         SELECT w.region,
                count(DISTINCT w.facility_code) AS facilities,
                round((sum(w.actual_mw) * 5 / 60)::numeric, 1) AS energy_mwh,
                round(avg(w.performance_index)::numeric, 2) AS avg_performance_index,
-               coalesce(max(l.n), 0) AS underperforming_now
+               coalesce(max(l.n), 0) AS underperforming_latest
         FROM win w
         LEFT JOIN latest l USING (region)
         GROUP BY w.region

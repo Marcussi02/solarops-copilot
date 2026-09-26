@@ -73,3 +73,15 @@ def sync_weather(conn: psycopg.Connection, fetch=weather.fetch_current) -> int:
     if not sites:
         return 0
     return db.upsert_weather(conn, fetch(sites))
+
+
+def backfill_weather(conn: psycopg.Connection, hours: int, fetch=None) -> int:
+    """Upsert hourly weather for the last `hours`, filling any gaps in the 15-min polls."""
+    sites = db.facility_sites(conn)
+    conn.commit()
+    if not sites:
+        return 0
+    if fetch is None:
+        def fetch(sites):
+            return weather.fetch_recent(sites, hours)
+    return db.upsert_weather(conn, fetch(sites))

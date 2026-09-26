@@ -79,7 +79,11 @@ def registry_handler(event, context):
 
 
 def weather_handler(event, context):
-    return {"observations": pipeline.sync_weather(get_conn())}
+    conn = get_conn()
+    current = pipeline.sync_weather(conn)
+    # Re-read the last few hours too: heals gaps from missed or failed polls.
+    backfilled = pipeline.backfill_weather(conn, hours=3)
+    return {"observations": current, "backfilled": backfilled}
 
 
 def retention_handler(event, context):
