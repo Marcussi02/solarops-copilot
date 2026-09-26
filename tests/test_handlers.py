@@ -77,3 +77,15 @@ def test_s3_archive_uses_date_partition(monkeypatch, aws_env):
         key = f"raw/dispatch_scada/date=2026-09-25/{name}"
         obj = boto3.client("s3").get_object(Bucket="raw", Key=key)
         assert obj["Body"].read() == b"zipbytes"
+
+
+def test_failed_connection_forgets_cached_secret(monkeypatch):
+    """A corrected DATABASE_URL must be picked up by a warm container without a redeploy."""
+    from solarops import config
+
+    monkeypatch.setattr(handlers, "_conn", None)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:bad pass@host/db")
+    config.database_url.cache_clear()
+    with pytest.raises(ValueError):
+        handlers.get_conn()
+    assert config.database_url.cache_info().currsize == 0
