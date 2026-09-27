@@ -39,6 +39,9 @@
     {"question": "Explain the difference between clipping and curtailment", "expect": {"tool": "search_docs", "args": {}}},
     {"question": "What should I check first when a farm is flagged?", "expect": {"tool": "search_docs", "args": {}}},
     {"question": "Why are farms in SA underperforming right now?", "expect": {"tool": "underperformers", "args": {"region": "SA1"}}},
-    {"question": "How is Victoria doing this afternoon?", "expect": {"tool": "fleet_summary", "args": {"region": "VIC1"}}}
+    {"question": "How is Victoria doing this afternoon?", "expect": {"tool": "fleet_summary", "args": {"region": "VIC1"}}},
+    {"question": "Which farms are being curtailed right now?", "expect": {"tool": "curtailed_farms", "args": {"region": null}}},
+    {"question": "Any farms dispatched down in SA?", "expect": {"tool": "curtailed_farms", "args": {"region": "SA1"}}},
+    {"question": "Is negative pricing holding back farms in Victoria?", "expect": {"tool": "curtailed_farms", "args": {"region": "VIC1"}}}
   ]
 }

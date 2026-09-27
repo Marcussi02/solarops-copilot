@@ -23,6 +23,9 @@ _UNDER = re.compile(
     r"underperform|under-perform|below|worst|lagging|not producing|low output|"
     r"problem|issue|fault|losing|struggling|poorly|behind"
 )
+_CURTAIL = re.compile(
+    r"curtail|dispatched down|constrained|negative pric|semi-dispatch|\bcapped\b"
+)
 _LIST = re.compile(
     r"\blist\b|which (solar )?farms|what (solar )?farms|how many (solar )?farms|"
     r"show (me )?(the |all )?(solar )?farms|\bfind\b"
@@ -117,6 +120,8 @@ class RuleBasedProvider:
             return ToolCall("facility_performance", {"facility": facility, "hours": parse_hours(q)})
         if _DOCS.search(q) and not _LIVE.search(q):
             return ToolCall("search_docs", {"query": question, "k": 4})
+        if _CURTAIL.search(q):
+            return ToolCall("curtailed_farms", {"region": region})
         if _UNDER.search(q) and (region or _LIVE.search(q) or _DATA_ASK.search(q)):
             args: dict = {"region": region}
             if (threshold := parse_threshold(q)) is not None:
@@ -169,6 +174,11 @@ def summarise_docs(result: dict, max_sources: int = 2) -> str:
     return " ".join(parts)
 
 
+def _excluded(result: dict) -> str:
+    n = result.get("curtailed_excluded") or 0
+    return f" {n} curtailed farm(s) were excluded as not faults." if n else ""
+
+
 def summarise(call: ToolCall, result: dict) -> str:
     if call.name == "search_docs":
         return summarise_docs(result)
@@ -178,7 +188,7 @@ def summarise(call: ToolCall, result: dict) -> str:
         if not farms:
             return (
                 f"No farms{where} are below {_pct(result.get('threshold'))} of expected output "
-                "at the latest daylight interval."
+                f"at the latest daylight interval.{_excluded(result)}"
             )
         top = "; ".join(
             f"{f['facility_name']} ({f['region']}) at {_pct(f['performance_index'])}"
@@ -188,7 +198,24 @@ def summarise(call: ToolCall, result: dict) -> str:
         at = _nem_time(farms[0].get("interval_end"))
         return (
             f"At {at}, {len(farms)} farm(s){where} were below "
-            f"{_pct(result['threshold'])} of expected: {top}."
+            f"{_pct(result['threshold'])} of expected: {top}.{_excluded(result)}"
+        )
+    if call.name == "curtailed_farms":
+        farms = result.get("farms", [])
+        where = f" in {result['region']}" if result.get("region") else ""
+        if not farms:
+            return f"No farms{where} were curtailed at the latest daylight interval."
+        parts = []
+        for f in farms[:5]:
+            if f["status"] == "curtailed":
+                why = f"{f['curtailed_mw']} MW held back by a dispatch cap"
+            else:
+                why = f"price ${f['price_per_mwh']}/MWh, likely curtailed (provisional)"
+            parts.append(f"{f['facility_name']} ({f['region']}) at {f['actual_mw']} MW, {why}")
+        at = _nem_time(farms[0].get("interval_end"))
+        return (
+            f"At {at}, {len(farms)} farm(s){where} were producing below the weather "
+            f"because of curtailment, not faults: {'; '.join(parts)}."
         )
     if call.name == "facility_performance":
         fac = result.get("facility")
@@ -202,6 +229,11 @@ def summarise(call: ToolCall, result: dict) -> str:
             f"{s['energy_mwh']} MWh in the last {result['hours']} h, peaking at {s['peak_mw']} MW. "
             f"Average performance index {_pct(s['avg_performance_index'])} "
             f"(lowest {_pct(s['min_performance_index'])})."
+            + (
+                f" {s['curtailed_mwh']} MWh was curtailed by AEMO dispatch caps."
+                if s.get("curtailed_mwh")
+                else ""
+            )
         )
     if call.name == "fleet_summary":
         regions = result.get("regions", [])
@@ -211,7 +243,8 @@ def summarise(call: ToolCall, result: dict) -> str:
         parts = "; ".join(
             f"{r['region']} {r['energy_mwh']} MWh from {r['facilities']} farms "
             f"(avg index {_pct(r['avg_performance_index'])}, "
-            f"{r['underperforming_latest']} flagged at last daylight interval)"
+            f"{r['underperforming_latest']} underperforming and "
+            f"{r.get('curtailed_latest', 0)} curtailed at the last daylight interval)"
             for r in regions
         )
         return f"Last {result['hours']} h: {total:.1f} MWh in total. {parts}."

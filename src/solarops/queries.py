@@ -84,22 +84,52 @@ def underperformers(
     region: str | None = None,
 ) -> list[dict]:
     """Facilities below `threshold` of weather-expected output at the latest scored
-    interval (the most recent one in daylight, so the answer is still useful at night)."""
+    interval (the most recent one in daylight, so the answer is still useful at night).
+
+    Farms held back by the market or network are not faults, so curtailed and likely
+    curtailed farms are excluded here and reported by `curtailed_farms` instead."""
     return _rows(
         conn,
         f"""
         SELECT facility_code, facility_name, region, interval_end,
                round(actual_mw::numeric, 1)   AS actual_mw,
                round(expected_mw::numeric, 1) AS expected_mw,
-               round(performance_index::numeric, 2) AS performance_index
+               round(performance_index::numeric, 2) AS performance_index,
+               round(rrp::numeric, 2) AS price_per_mwh
         FROM facility_performance
         WHERE interval_end = ({_LATEST_SCORED})
           AND performance_index < %(threshold)s
+          AND coalesce(status, '') NOT IN ('curtailed', 'likely_curtailed')
           AND (%(region)s::text IS NULL OR region = %(region)s)
         ORDER BY performance_index
         LIMIT %(limit)s
         """,
         {"threshold": threshold, "limit": limit, "region": region},
+    )
+
+
+def curtailed_farms(
+    conn: psycopg.Connection, limit: int = 10, region: str | None = None
+) -> list[dict]:
+    """Farms below expectation at the latest scored interval because they were
+    dispatched down (`curtailed`, with MW lost) or prices were negative
+    (`likely_curtailed`, provisional until next-day dispatch data arrives)."""
+    return _rows(
+        conn,
+        f"""
+        SELECT facility_code, facility_name, region, interval_end, status,
+               round(actual_mw::numeric, 1)   AS actual_mw,
+               round(expected_mw::numeric, 1) AS expected_mw,
+               round(curtailed_mw::numeric, 1) AS curtailed_mw,
+               round(rrp::numeric, 2) AS price_per_mwh
+        FROM facility_performance
+        WHERE interval_end = ({_LATEST_SCORED})
+          AND status IN ('curtailed', 'likely_curtailed')
+          AND (%(region)s::text IS NULL OR region = %(region)s)
+        ORDER BY expected_mw - actual_mw DESC
+        LIMIT %(limit)s
+        """,
+        {"limit": limit, "region": region},
     )
 
 
@@ -129,6 +159,9 @@ def facility_report(conn: psycopg.Connection, facility_code: str, hours: int) ->
                round(max(actual_mw)::numeric, 1) AS peak_mw,
                round(avg(performance_index)::numeric, 2) AS avg_performance_index,
                round(min(performance_index)::numeric, 2) AS min_performance_index,
+               round((sum(curtailed_mw) * 5 / 60)::numeric, 1) AS curtailed_mwh,
+               count(*) FILTER (WHERE status = 'curtailed') AS curtailed_intervals,
+               count(*) FILTER (WHERE status = 'likely_curtailed') AS likely_curtailed_intervals,
                max(interval_end) AS latest_interval
         FROM facility_performance
         WHERE {where}
@@ -158,25 +191,48 @@ def fleet_summary(conn: psycopg.Connection, hours: int, region: str | None = Non
         conn,
         f"""
         WITH win AS (
-            SELECT * FROM facility_performance
+            -- Explicit columns: status and curtailed_mw are costly lookups, and a CTE
+            -- used twice is materialised, so SELECT * would compute them for every row.
+            SELECT facility_code, region, interval_end, actual_mw, performance_index
+            FROM facility_performance
             WHERE {_WINDOW}
               AND (%(region)s::text IS NULL OR region = %(region)s)
         ),
+        curtailed AS (
+            -- One set-based pass over the dispatch table for the whole window,
+            -- instead of a per-interval lookup for every row.
+            SELECT u.region,
+                   sum(GREATEST(coalesce(d.uigf, d.availability, 0) - d.total_cleared, 0))
+                       * 5 / 60 AS mwh
+            FROM unit_dispatch d
+            JOIN solar_units u USING (duid)
+            WHERE d.semidispatch_cap
+              AND d.interval_end > (SELECT max(interval_end) FROM scada_readings)
+                                   - make_interval(hours => %(hours)s)
+              AND (%(region)s::text IS NULL OR u.region = %(region)s)
+            GROUP BY u.region
+        ),
         latest AS (
-            SELECT region, count(*) FILTER (WHERE performance_index < %(threshold)s) AS n
-            FROM win
+            SELECT region,
+                   count(*) FILTER (WHERE status = 'underperforming') AS n,
+                   count(*) FILTER (WHERE status IN ('curtailed', 'likely_curtailed')) AS c
+            FROM facility_performance
             WHERE interval_end = ({_LATEST_SCORED})
+              AND (%(region)s::text IS NULL OR region = %(region)s)
             GROUP BY region
         )
         SELECT w.region,
                count(DISTINCT w.facility_code) AS facilities,
                round((sum(w.actual_mw) * 5 / 60)::numeric, 1) AS energy_mwh,
                round(avg(w.performance_index)::numeric, 2) AS avg_performance_index,
-               coalesce(max(l.n), 0) AS underperforming_latest
+               coalesce(max(l.n), 0) AS underperforming_latest,
+               coalesce(max(l.c), 0) AS curtailed_latest,
+               round(coalesce(max(c.mwh), 0)::numeric, 1) AS curtailed_mwh
         FROM win w
         LEFT JOIN latest l USING (region)
+        LEFT JOIN curtailed c USING (region)
         GROUP BY w.region
         ORDER BY energy_mwh DESC
         """,
-        {"hours": hours, "region": region, "threshold": DEFAULT_THRESHOLD},
+        {"hours": hours, "region": region},
     )

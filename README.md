@@ -35,7 +35,7 @@ Real response from a run on live AEMO data (26 Sep 2026):
 
 The same run answered *"How did the fleet do in the last 8 hours?"* with **37,907.7 MWh from 114 farms across NSW, QLD, VIC and SA**. It ingested 96 five-minute files (11,712 readings) in about 100 seconds.
 
-> **Status:** Phase 1 (ingestion) ✅ · Phase 2 (API, copilot, evals, AWS deploy) ✅ · Phase 3 (RAG over an O&M knowledge base, with citations and retrieval evals) ✅ · Phase 4 (MCP server) ✅ · Next: curtailment-aware scoring. See the [Roadmap](#roadmap).
+> **Status:** Phase 1 (ingestion) ✅ · Phase 2 (API, copilot, evals, AWS deploy) ✅ · Phase 3 (RAG over an O&M knowledge base, with citations and retrieval evals) ✅ · Phase 4 (MCP server) ✅ · Curtailment-aware scoring ✅ · Next: observability and a public dashboard. See the [Roadmap](#roadmap).
 
 ## Architecture
 
@@ -55,8 +55,9 @@ The same run answered *"How did the fleet do in the last 8 hours?"* with **37,90
                                                   └──────────┬───────────┘
  EventBridge daily ─► RegistryFunction ──┐                   ▼
  EventBridge 15 min ► WeatherFunction ───┼────────► PostgreSQL (Supabase)
- EventBridge daily ─► RetentionFunction ─┘          solar_units · scada_readings · weather_obs
-                                                    ingested_files · facility_performance (view)
+ EventBridge 6 h ───► DispatchFunction ──┤          solar_units · scada_readings · weather_obs
+ EventBridge daily ─► RetentionFunction ─┘          region_prices · unit_dispatch · ingested_files
+                                                    facility_performance (view, with status)
                                                          ▲ read-only session, 5 s timeout
  client ─► API Gateway (HTTP API, throttled) ─► ApiFunction (FastAPI + Mangum)
                                                    ├─ /v1/* read endpoints (60 s cache)
@@ -81,7 +82,7 @@ question ──► provider.choose_tool ──► validate (pydantic bounds) ─
 
 ### Evals
 
-[`evals/golden.json`](evals/golden.json) holds 31 real-world phrasings, each mapped to the tool call it should produce: the right farm, window, region and threshold. Routing is where copilots fail in practice (the wrong farm, or a region silently dropped), and it can be scored without a database.
+[`evals/golden.json`](evals/golden.json) holds 34 real-world phrasings, each mapped to the tool call it should produce: the right farm, window, region and threshold. Routing is where copilots fail in practice (the wrong farm, or a region silently dropped), and it can be scored without a database.
 
 ```bash
 PYTHONPATH=src python -m solarops.evals                     # router: CI gate, must be 100%
@@ -170,6 +171,7 @@ Live deployment: [interactive docs](https://h12xi690he.execute-api.ap-southeast-
 | `GET /v1/facilities?region=` | Solar farms with capacity and location |
 | `GET /v1/facilities/{code}?hours=24` | Energy, peak, performance index and hourly profile for one farm |
 | `GET /v1/underperformers?threshold=0.6&region=` | Farms below expected output at the latest interval |
+| `GET /v1/curtailed?region=` | Farms held back by dispatch caps (`curtailed`, MW lost) or negative prices (`likely_curtailed`) |
 | `GET /v1/fleet?hours=24&region=` | Energy and average performance per NEM region |
 | `GET /v1/docs` | Knowledge-base documents and their sections |
 | `GET /v1/docs/search?q=&k=4` | Top passages for a query, numbered for citation, with the corpus version |
@@ -189,6 +191,7 @@ Live deployment: [interactive docs](https://h12xi690he.execute-api.ap-southeast-
 | **Weather matched to the nearest observation (±30 min)**, with an hourly backfill stored at mid-hour | A missed poll no longer leaves intervals unscored, and a sunny-afternoon average is never applied at dusk. |
 | **Tool calling with validated arguments**, deterministic fallback, golden-set evals in CI | The AI layer is testable, auditable and still works when the model doesn't. |
 | **RAG with BM25 by default, embeddings optional**, section-level chunks, enforced citations, retrieval evals in CI | Small, curated corpus: keyword search is fast, free and hard to beat, and hybrid is one parameter away. Rejecting uncited answers keeps every claim traceable. |
+| **Curtailment-aware status** (`ok` / `underperforming` / `likely_curtailed` / `curtailed`): negative prices every 5 minutes, AEMO next-day semi-dispatch caps once a day | Farms dispatched down by the market or network aren't faults. No single AEMO report is both live and complete, so the score is provisional in real time and corrected when the ground truth lands. |
 | **Throttling at API Gateway**, in-process 60 s cache, `Cache-Control` headers | Data changes every 5 minutes, so rate limiting happens before any Lambda runs and repeated reads are cheap. |
 | **Keyless deploys**: GitHub OIDC → short-lived IAM role scoped to this stack | No AWS access keys exist anywhere. The role can't edit its own permissions. |
 | **Secrets in SSM Parameter Store**, least-privilege IAM for each function | No credentials in code or environment files. |
@@ -233,7 +236,7 @@ The workflow builds with SAM, deploys, loads the solar farm registry, and smoke-
 
 These are deliberate simplifications, found and measured against live data:
 
-- **Curtailment isn't a fault.** Farms in the NEM often drop to 0 MW in full sun when prices go negative or AEMO caps them. The index flags these as underperforming. The fix is to join AEMO's semi-dispatch caps (see the roadmap).
+- **Curtailment is confirmed a day late.** AEMO publishes per-unit dispatch targets and caps only in the next-day report, so live scores use negative prices as a provisional hint (`likely_curtailed`) until the ground truth arrives.
 - **GHI, not plane-of-array irradiance.** Single-axis trackers collect more than horizontal irradiance, so tracking farms can score above 100%. A per-farm calibrated ratio, or transposition to plane-of-array, would tighten this.
 - **Hourly weather is coarse.** Fast-moving cloud shows up in the 5-minute output but not in hourly irradiance. Satellite irradiance would resolve it.
 
@@ -241,7 +244,7 @@ These are deliberate simplifications, found and measured against live data:
 
 - [x] **Phase 1: data platform.** Event-driven ingestion, idempotency, DLQ, archive, performance view.
 - [x] **Phase 2: API and copilot.** FastAPI on Lambda, API-key auth, throttling, caching, OpenAPI; a tool-calling copilot with pluggable models and a fallback; golden-set evals as a CI gate; keyless deploys with OIDC.
-- [ ] **Curtailment-aware scoring.** Join AEMO `DISPATCH_UNIT_SOLUTION` semi-dispatch caps so economic curtailment isn't reported as a fault.
+- [x] **Curtailment-aware scoring.** Regional prices from DispatchIS every 5 minutes and per-unit semi-dispatch caps from Next_Day_Dispatch, so curtailment isn't reported as a fault.
 - [x] **Phase 3: RAG.** O&M knowledge base, BM25 with optional hybrid embeddings, enforced citations, retrieval evals as a CI gate.
 - [ ] **Manufacturer documents.** Ingest inverter and tracker manuals (PDF) for the specific equipment at each site, where licences allow.
 - [x] **Phase 4: MCP server.** The same tool catalogue exposed over the Model Context Protocol, with tests over an in-memory MCP session.

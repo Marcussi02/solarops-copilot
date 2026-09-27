@@ -4,6 +4,7 @@
                                                       \\-> S3 raw archive
     EventBridge (daily)  -> registry_handler
     EventBridge (15 min) -> weather_handler
+    EventBridge (6 h)    -> dispatch_handler (next-day dispatch outcomes, curtailment)
     EventBridge (daily)  -> retention_handler
     API Gateway          -> solarops.api.handler (read-only API + copilot)
 """
@@ -55,7 +56,14 @@ def poll_handler(event, context):
             ],
         )
     logger.info("queued %d files", len(files))
-    return {"queued": len(files)}
+    try:  # prices are an enrichment: never let them block SCADA ingestion
+        prices = pipeline.sync_prices(conn)
+    except Exception:
+        logger.exception("price sync failed")
+        if not conn.closed:
+            conn.rollback()
+        prices = None
+    return {"queued": len(files), "prices": prices}
 
 
 def ingest_handler(event, context):
@@ -84,6 +92,10 @@ def weather_handler(event, context):
     # Re-read the last few hours too: heals gaps from missed or failed polls.
     backfilled = pipeline.backfill_weather(conn, hours=3)
     return {"observations": current, "backfilled": backfilled}
+
+
+def dispatch_handler(event, context):
+    return {"loaded": pipeline.sync_unit_dispatch(get_conn())}
 
 
 def retention_handler(event, context):

@@ -50,6 +50,11 @@ class FleetArgs(_Args):
     region: Region | None = Field(None, description="NEM region code, or null for all regions")
 
 
+class CurtailedArgs(_Args):
+    limit: int = Field(10, ge=1, le=25, description="Maximum number of farms to return")
+    region: Region | None = Field(None, description="NEM region code, or null for all regions")
+
+
 class FindArgs(_Args):
     region: Region | None = Field(None, description="NEM region code, or null for all regions")
 
@@ -71,7 +76,17 @@ class Tool:
 
 def _underperformers(conn, a: UnderperformersArgs) -> dict:
     rows = queries.underperformers(conn, a.threshold, a.limit, a.region)
-    return {"threshold": a.threshold, "region": a.region, "farms": rows}
+    curtailed = queries.curtailed_farms(conn, 25, a.region)
+    return {
+        "threshold": a.threshold,
+        "region": a.region,
+        "farms": rows,
+        "curtailed_excluded": len(curtailed),
+    }
+
+
+def _curtailed(conn, a: CurtailedArgs) -> dict:
+    return {"region": a.region, "farms": queries.curtailed_farms(conn, a.limit, a.region)}
 
 
 def _facility(conn, a: FacilityArgs) -> dict:
@@ -108,7 +123,8 @@ TOOLS: dict[str, Tool] = {
         Tool(
             "underperformers",
             "Solar farms producing well below what current irradiance says they should, "
-            "at the latest 5-minute interval. Use for faults, issues, low output, worst farms.",
+            "at the latest 5-minute interval, excluding farms that were curtailed. Use for "
+            "faults, issues, low output, worst farms.",
             UnderperformersArgs,
             _underperformers,
         ),
@@ -124,6 +140,14 @@ TOOLS: dict[str, Tool] = {
             "totals, overall generation, and comparing regions.",
             FleetArgs,
             _fleet,
+        ),
+        Tool(
+            "curtailed_farms",
+            "Solar farms held below their potential by AEMO dispatch caps or negative "
+            "prices at the latest interval, with MW curtailed. Use for curtailment, "
+            "dispatched down, constrained or negative-price questions about live data.",
+            CurtailedArgs,
+            _curtailed,
         ),
         Tool(
             "find_facilities",

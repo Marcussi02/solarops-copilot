@@ -88,6 +88,7 @@ jobs:
             --query Parameter.Value --output text)
           echo "::add-mask::$key"
           curl -fsS "$url/health"
+          curl -fsS -o /dev/null -H "x-api-key: $key" "$url/v1/curtailed"
           curl -fsS -H "x-api-key: $key" -H "content-type: application/json" \
             -d '{"question":"Which solar farms are underperforming right now?"}' "$url/v1/ask" \
             | python -c "import json,sys; b=json.load(sys.stdin); print(b['answer']); print(b['provider'], b['tool'])"
