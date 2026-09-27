@@ -35,7 +35,7 @@ Real response from a run on live AEMO data (26 Sep 2026):
 
 The same run answered *"How did the fleet do in the last 8 hours?"* with **37,907.7 MWh from 114 farms across NSW, QLD, VIC and SA**. It ingested 96 five-minute files (11,712 readings) in about 100 seconds.
 
-> **Status:** Phase 1 (ingestion) ✅ · Phase 2 (API, copilot, evals, AWS deploy) ✅ · Phase 3 (RAG over an O&M knowledge base, with citations and retrieval evals) ✅ · Phase 4 (MCP server) ✅ · Curtailment-aware scoring ✅ · Phase 5 (observability) ✅ · Next: a public dashboard. See the [Roadmap](#roadmap).
+> **Status:** Phase 1 (ingestion) ✅ · Phase 2 (API, copilot, evals, AWS deploy) ✅ · Phase 3 (RAG over an O&M knowledge base, with citations and retrieval evals) ✅ · Phase 4 (MCP server) ✅ · Curtailment-aware scoring ✅ · Phase 5 (observability) ✅ · Public live dashboard ✅. See the [Roadmap](#roadmap).
 
 ## Architecture
 
@@ -158,7 +158,7 @@ The same tool catalogue is exposed over the [Model Context Protocol](https://mod
 
 ## API
 
-OpenAPI docs are served at `/docs`. The `/v1` routes need an `x-api-key` header.
+OpenAPI docs are served at `/docs`. The `/v1` routes need an `x-api-key` header. The `/public` routes and `/dashboard` don't: they serve aggregates only, from the same query catalogue with fixed limits. Responses are cached for 5 minutes on the server and by clients (`Cache-Control: max-age=300`), and API Gateway throttles them per route (burst 10, 5 requests/s).
 
 Live deployment: [interactive docs](https://h12xi690he.execute-api.ap-southeast-2.amazonaws.com/docs) · [health check](https://h12xi690he.execute-api.ap-southeast-2.amazonaws.com/health)
 
@@ -167,6 +167,11 @@ Live deployment: [interactive docs](https://h12xi690he.execute-api.ap-southeast-
 | Route | What it returns |
 |---|---|
 | `GET /health` | Liveness and data freshness (`data_lag_minutes`). Public. |
+| `GET /dashboard` | Live fleet dashboard: one self-contained HTML page, no external requests. Public. |
+| `GET /public/status` | Latest interval, data lag, farm and unit counts. Public. |
+| `GET /public/fleet?hours=24` | Energy and average performance per NEM region. Public. |
+| `GET /public/underperformers` | Up to 20 farms below expected output at the latest interval. Public. |
+| `GET /public/curtailed` | Up to 20 farms held back by dispatch caps or negative prices. Public. |
 | `GET /v1/status` | Pipeline counters: units, files, readings, latest interval |
 | `GET /v1/facilities?region=` | Solar farms with capacity and location |
 | `GET /v1/facilities/{code}?hours=24` | Energy, peak, performance index and hourly profile for one farm |
@@ -231,7 +236,7 @@ python -m solarops.cli ask "How did the fleet do in the last 6 hours?"
 uvicorn solarops.api:app --reload           # API on http://localhost:8000/docs
 ```
 
-Tests: 125 unit and integration tests. The integration tests need a Postgres, and CI provides one.
+Tests: 136 unit and integration tests. The integration tests need a Postgres, and CI provides one.
 
 ```bash
 export TEST_DATABASE_URL=postgresql://solarops:solarops@localhost:5432/solarops
@@ -267,7 +272,7 @@ These are deliberate simplifications, found and measured against live data:
 - [ ] **Manufacturer documents.** Ingest inverter and tracker manuals (PDF) for the specific equipment at each site, where licences allow.
 - [x] **Phase 4: MCP server.** The same tool catalogue exposed over the Model Context Protocol, with tests over an in-memory MCP session.
 - [x] **Phase 5: observability.** X-Ray tracing, JSON logs with correlation ids, EMF metrics for latency, fallbacks, tokens and cost, a CloudWatch dashboard and a staleness alarm.
-- [ ] **Public dashboard.** An unauthenticated, cached, read-only view of fleet performance.
+- [x] **Public dashboard.** An unauthenticated, cached, throttled, read-only view of fleet performance at `/dashboard`.
 
 ## Data sources and terms
 

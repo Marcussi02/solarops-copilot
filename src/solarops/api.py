@@ -1,6 +1,11 @@
 """HTTP API: FastAPI app, served on Lambda behind API Gateway via Mangum.
 
     GET  /health                       liveness + data freshness (public)
+    GET  /dashboard                    live fleet dashboard, one self-contained HTML page (public)
+    GET  /public/status                data freshness and farm count (public)
+    GET  /public/fleet?hours=24        energy and performance per region (public)
+    GET  /public/underperformers       farms below expected output right now (public)
+    GET  /public/curtailed             farms held back by dispatch caps or prices (public)
     GET  /v1/status                    pipeline counters
     GET  /v1/facilities                solar farms, optional ?region=
     GET  /v1/facilities/{code}         one farm: energy, peak, performance, hourly profile
@@ -11,9 +16,12 @@
     GET  /v1/docs/search?q=            retrieve cited passages from the knowledge base
     POST /v1/ask                       natural-language question -> grounded answer
 
-/v1 routes need an `x-api-key` header when API_KEY is configured. Rate limiting is
-enforced by API Gateway throttling (see template.yaml), and read endpoints are cached
-in-process for CACHE_TTL_SECONDS because the data only changes every 5 minutes.
+/v1 routes need an `x-api-key` header when API_KEY is configured. /public routes are
+unauthenticated: read-only aggregates from the same query catalogue, with fixed
+limits, cached for 5 minutes in-process and by clients (Cache-Control), and throttled
+harder per route at API Gateway. Rate limiting is enforced by API Gateway throttling
+(see template.yaml), and read endpoints are cached in-process for CACHE_TTL_SECONDS
+because the data only changes every 5 minutes.
 The database session is READ ONLY with a statement timeout.
 
 Every request publishes ApiLatencyMs by route template (never the raw path, so the
@@ -26,11 +34,13 @@ import os
 import time
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
+from importlib import resources
 from typing import Annotated
 
 import psycopg
 from aws_lambda_powertools.logging import correlation_paths
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi.responses import HTMLResponse
 from mangum import Mangum
 from pydantic import BaseModel, Field
 
@@ -91,9 +101,16 @@ class TTLCache:
 cache = TTLCache(float(os.environ.get("CACHE_TTL_SECONDS", "60")))
 
 
-def cached(response: Response, key: tuple, compute: Callable[[], object]):
-    response.headers["Cache-Control"] = f"public, max-age={int(cache.ttl)}"
-    return cache.get_or_set(key, compute)
+def cached(response: Response, key: tuple, compute: Callable[[], object], store=None):
+    store = store or cache
+    response.headers["Cache-Control"] = f"public, max-age={int(store.ttl)}"
+    return store.get_or_set(key, compute)
+
+
+# Public data is refreshed at most every 5 minutes, whatever CACHE_TTL_SECONDS says.
+PUBLIC_TTL_SECONDS = 300
+PUBLIC_LIMIT = 20
+public_cache = TTLCache(PUBLIC_TTL_SECONDS, maxsize=64)
 
 
 def require_api_key(x_api_key: Annotated[str | None, Header()] = None) -> None:
@@ -121,14 +138,77 @@ async def record_latency(request: Request, call_next):
 # ---------- routes ----------
 
 
+def data_lag_minutes(latest: datetime | None) -> int | None:
+    return None if latest is None else round((datetime.now(UTC) - latest).total_seconds() / 60)
+
+
 @app.get("/health", tags=["ops"])
 def health(conn: Conn):
     try:
         latest = queries.latest_interval(conn)
     except psycopg.Error as exc:
         raise HTTPException(status_code=503, detail="database unavailable") from exc
-    lag = None if latest is None else round((datetime.now(UTC) - latest).total_seconds() / 60)
+    lag = data_lag_minutes(latest)
     return {"status": "ok", "latest_interval": latest, "data_lag_minutes": lag}
+
+
+public = APIRouter(prefix="/public", tags=["public"])
+
+
+@public.get("/status")
+def public_status(conn: Conn, response: Response):
+    def build():
+        counts = db.status(conn)
+        return {
+            "latest_interval": counts["latest_interval"],
+            "latest_weather": counts["latest_weather"],
+            "facilities": counts["facilities"],
+            "units": counts["units"],
+            "generated_at": datetime.now(UTC),
+        }
+
+    body = cached(response, ("public_status",), build, public_cache)
+    # Lag is computed per request so a cached body never understates staleness.
+    return {**body, "data_lag_minutes": data_lag_minutes(body["latest_interval"])}
+
+
+@public.get("/fleet")
+def public_fleet(
+    conn: Conn, response: Response, hours: Annotated[int, Query(ge=1, le=168)] = 24
+):
+    return cached(
+        response, ("public_fleet", hours), lambda: queries.fleet_summary(conn, hours), public_cache
+    )
+
+
+@public.get("/underperformers")
+def public_underperformers(conn: Conn, response: Response):
+    return cached(
+        response,
+        ("public_under",),
+        lambda: queries.underperformers(conn, queries.DEFAULT_THRESHOLD, PUBLIC_LIMIT),
+        public_cache,
+    )
+
+
+@public.get("/curtailed")
+def public_curtailed(conn: Conn, response: Response):
+    return cached(
+        response,
+        ("public_curtailed",),
+        lambda: queries.curtailed_farms(conn, PUBLIC_LIMIT),
+        public_cache,
+    )
+
+
+DASHBOARD_HTML = resources.files("solarops").joinpath("static/dashboard.html").read_text()
+
+
+@app.get("/dashboard", response_class=HTMLResponse, tags=["public"])
+def dashboard():
+    return HTMLResponse(
+        DASHBOARD_HTML, headers={"Cache-Control": f"public, max-age={PUBLIC_TTL_SECONDS}"}
+    )
 
 
 v1 = APIRouter(prefix="/v1", dependencies=[Depends(require_api_key)])
@@ -241,6 +321,7 @@ def ask(body: AskRequest, conn: Conn):
     return agent.ask(conn, body.question).to_dict()
 
 
+app.include_router(public)
 app.include_router(v1)
 
 _mangum = Mangum(app, lifespan="off")

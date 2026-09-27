@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SolarOps live fleet</title>
+<meta name="description" content="Live output and performance of Australian utility-scale solar farms, from AEMO NEM data.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='4' fill='%23eda100'/%3E%3C/svg%3E">
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7;
+    --surface: #fcfcfb;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #6e6c67;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --ring: rgba(11, 11, 11, 0.10);
+    --series: #2a78d6;
+    --series-wash: rgba(42, 120, 214, 0.10);
+    --good: #0ca30c;
+    --warning: #fab219;
+    --serious: #ec835a;
+    --critical: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #0d0d0d;
+      --surface: #1a1a19;
+      --ink: #ffffff;
+      --ink-2: #c3c2b7;
+      --muted: #9a9890;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --ring: rgba(255, 255, 255, 0.10);
+      --series: #3987e5;
+      --series-wash: rgba(57, 135, 229, 0.14);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--ink);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 1120px; margin: 0 auto; padding: 24px 16px 48px; }
+  header { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: flex-end; justify-content: space-between; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+  h2 { font-size: 15px; margin: 0 0 2px; }
+  .sub { color: var(--ink-2); margin: 2px 0 0; }
+  .note { color: var(--muted); font-size: 13px; margin: 0; }
+  .freshness { text-align: right; }
+  .freshness .note { margin-top: 4px; }
+  .card {
+    background: var(--surface);
+    border-radius: 12px;
+    box-shadow: 0 0 0 1px var(--ring);
+    padding: 16px;
+  }
+  .kpis { display: grid; grid-template-columns: 1.4fr repeat(4, 1fr); gap: 12px; margin: 20px 0 12px; }
+  .kpi .label { color: var(--ink-2); font-size: 13px; }
+  .kpi .value { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; margin-top: 4px; }
+  .kpi.hero .value { font-size: 48px; line-height: 1.05; }
+  .kpi .unit { font-size: 15px; font-weight: 500; color: var(--ink-2); margin-left: 4px; }
+  .kpi .note { margin-top: 2px; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+  .chart { margin-top: 12px; padding-top: 16px; position: relative; }
+  .row { display: grid; grid-template-columns: 44px 1fr; align-items: center; gap: 10px; height: 34px; }
+  .row .name { color: var(--ink-2); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .track { position: relative; height: 100%; display: flex; align-items: center; outline: none; }
+  .track:focus-visible { box-shadow: 0 0 0 2px var(--series); border-radius: 4px; }
+  .bar { height: 20px; background: var(--series); border-radius: 0 4px 4px 0; min-width: 2px; }
+  .track:hover .bar, .track:focus .bar { filter: brightness(1.08); }
+  .bar-label { margin-left: 8px; font-size: 13px; color: var(--ink); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .axis { position: relative; height: 18px; margin-left: 54px; border-top: 1px solid var(--axis); }
+  .axis span { position: absolute; top: 2px; transform: translateX(-50%); font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .axis span:first-child { transform: none; }
+  .axis span.end { transform: translateX(-100%); }
+  .gridlines { position: absolute; inset: 0 0 18px 54px; pointer-events: none; }
+  .gridlines i { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--grid); }
+  .gridlines i.ref { background: var(--critical); opacity: 0.7; }
+  .gridlines b { position: absolute; top: -18px; transform: translateX(-50%); font-size: 11px; font-weight: 500; color: var(--ink-2); white-space: nowrap; }
+  .rows { position: relative; }
+  details { margin-top: 10px; }
+  summary { cursor: pointer; color: var(--ink-2); font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  th, td { text-align: left; padding: 6px 8px 6px 0; border-bottom: 1px solid var(--grid); }
+  th { color: var(--ink-2); font-weight: 500; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .farm { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--grid); }
+  .farm:last-child { border-bottom: 0; }
+  .farm .fname { font-weight: 500; }
+  .farm .meta { color: var(--ink-2); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .farm .right { text-align: right; flex-shrink: 0; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; font-weight: 500; color: var(--ink);
+    padding: 2px 8px 2px 6px; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--ring);
+    white-space: nowrap;
+  }
+  .badge svg { width: 12px; height: 12px; flex: none; }
+  .empty { color: var(--ink-2); padding: 12px 0 4px; }
+  .banner { display: none; margin-top: 12px; padding: 10px 12px; border-radius: 8px; box-shadow: inset 0 0 0 1px var(--ring); background: var(--surface); }
+  .banner.show { display: flex; gap: 8px; align-items: center; }
+  .tooltip {
+    position: fixed; z-index: 10; pointer-events: none; display: none;
+    background: var(--surface); color: var(--ink); border-radius: 8px;
+    box-shadow: 0 0 0 1px var(--ring), 0 6px 20px rgba(0, 0, 0, 0.18);
+    padding: 8px 10px; font-size: 13px; min-width: 150px;
+  }
+  .tooltip .t { font-weight: 600; margin-bottom: 4px; }
+  .tooltip .kv { display: flex; justify-content: space-between; gap: 16px; color: var(--ink-2); }
+  .tooltip .kv b { color: var(--ink); font-weight: 500; font-variant-numeric: tabular-nums; }
+  footer { margin-top: 28px; color: var(--muted); font-size: 12px; }
+  footer a { color: var(--ink-2); }
+  .skeleton { color: var(--muted); }
+  @media (max-width: 900px) {
+    .kpis { grid-template-columns: repeat(2, 1fr); }
+    .kpi.hero { grid-column: 1 / -1; }
+  }
+  @media (max-width: 720px) {
+    .grid-2 { grid-template-columns: 1fr; }
+    .freshness { text-align: left; }
+    .kpi.hero .value { font-size: 40px; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .bar { transition: width 400ms ease-out; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Solar fleet, live</h1>
+      <p class="sub">Australian utility-scale solar farms in the National Electricity Market</p>
+    </div>
+    <div class="freshness" aria-live="polite">
+      <span id="fresh-badge" class="badge skeleton">Loading…</span>
+      <p class="note" id="fresh-note">&nbsp;</p>
+      <p class="note" id="updated">&nbsp;</p>
+    </div>
+  </header>
+
+  <div class="banner" id="banner" role="alert"></div>
+
+  <section class="kpis" aria-label="Fleet summary">
+    <div class="card kpi hero">
+      <div class="label">Fleet energy, last 24 hours</div>
+      <div class="value"><span id="k-energy">–</span><span class="unit">MWh</span></div>
+      <p class="note" id="k-energy-note">&nbsp;</p>
+    </div>
+    <div class="card kpi">
+      <div class="label">Average performance</div>
+      <div class="value" id="k-perf">–</div>
+      <p class="note">actual vs weather-expected</p>
+    </div>
+    <div class="card kpi">
+      <div class="label">Farms reporting</div>
+      <div class="value" id="k-farms">–</div>
+      <p class="note" id="k-farms-note">&nbsp;</p>
+    </div>
+    <div class="card kpi">
+      <div class="label">Underperforming now</div>
+      <div class="value" id="k-under">–</div>
+      <p class="note">below 60% of expected</p>
+    </div>
+    <div class="card kpi">
+      <div class="label">Curtailed now</div>
+      <div class="value" id="k-curt">–</div>
+      <p class="note">held back, not faulty</p>
+    </div>
+  </section>
+
+  <section class="grid-2">
+    <div class="card">
+      <h2>Energy by region, last 24 hours</h2>
+      <p class="note">MWh generated</p>
+      <div class="chart" id="chart-energy"></div>
+    </div>
+    <div class="card">
+      <h2>Average performance by region, last 24 hours</h2>
+      <p class="note">Actual output as a share of weather-expected output, daylight intervals only</p>
+      <div class="chart" id="chart-perf"></div>
+    </div>
+  </section>
+  <details class="card" style="margin-top:12px">
+    <summary>Show regions as a table</summary>
+    <table>
+      <thead><tr><th>Region</th><th class="num">Farms</th><th class="num">Energy (MWh)</th><th class="num">Avg performance</th><th class="num">Underperforming</th><th class="num">Curtailed</th><th class="num">Curtailed energy (MWh)</th></tr></thead>
+      <tbody id="region-table"></tbody>
+    </table>
+  </details>
+
+  <section class="grid-2">
+    <div class="card">
+      <h2>Underperforming farms</h2>
+      <p class="note" id="under-note">At the latest daylight interval</p>
+      <div id="list-under"><p class="empty skeleton">Loading…</p></div>
+    </div>
+    <div class="card">
+      <h2>Curtailed farms</h2>
+      <p class="note">Dispatched down by AEMO, or holding back at negative prices</p>
+      <div id="list-curt"><p class="empty skeleton">Loading…</p></div>
+    </div>
+  </section>
+
+  <footer>
+    <p>Refreshes every 5 minutes. Times are NEM time (AEST). Performance index = actual output ÷ (capacity × irradiance ÷ 1000 × 0.8), scored when irradiance is at least 200 W/m².</p>
+    <p>Data: AEMO NEMWeb (© AEMO), Open Electricity facility registry, Open-Meteo weather (CC BY 4.0). Independent project, not affiliated with these organisations. <a href="/docs">API docs</a> · <a href="https://github.com/Marcussi02/solarops-copilot">Source</a></p>
+  </footer>
+</main>
+<div class="tooltip" id="tooltip" role="tooltip"></div>
+
+<script>
+(() => {
+  "use strict";
+  const REFRESH_MS = 5 * 60 * 1000;
+  const THRESHOLD = 0.6;
+  const REGION_NAMES = { NSW1: "New South Wales", QLD1: "Queensland", VIC1: "Victoria", SA1: "South Australia", TAS1: "Tasmania" };
+  const ICONS = {
+    good: '<svg viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="6" fill="var(--good)"/><path d="M3.4 6.2l1.8 1.8 3.4-3.6" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    warning: '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M6 .8l5.4 10H.6z" fill="var(--warning)"/><path d="M6 4.3v3" stroke="#0b0b0b" stroke-width="1.4" stroke-linecap="round"/><circle cx="6" cy="9" r=".8" fill="#0b0b0b"/></svg>',
+    serious: '<svg viewBox="0 0 12 12" aria-hidden="true"><rect x="1" y="1" width="10" height="10" rx="2" fill="var(--serious)"/><path d="M3.5 6h5" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/></svg>',
+    critical: '<svg viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="6" fill="var(--critical)"/><path d="M6 3.2v3.3M6 8.6v.1" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  };
+
+  const $ = (id) => document.getElementById(id);
+  const nf0 = new Intl.NumberFormat("en-AU", { maximumFractionDigits: 0 });
+  const nf1 = new Intl.NumberFormat("en-AU", { maximumFractionDigits: 1 });
+  const nem = new Intl.DateTimeFormat("en-AU", { timeZone: "Australia/Brisbane", hour: "numeric", minute: "2-digit", day: "numeric", month: "short" });
+  const nemTime = new Intl.DateTimeFormat("en-AU", { timeZone: "Australia/Brisbane", hour: "numeric", minute: "2-digit" });
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const pct = (x) => (x == null ? "–" : `${nf0.format(x * 100)}%`);
+  const short = (region) => String(region || "").replace(/1$/, "");
+  const money = (x) => `${x < 0 ? "−" : ""}$${nf0.format(Math.abs(x))}`;
+  const badge = (kind, label) => `<span class="badge">${ICONS[kind]}${esc(label)}</span>`;
+
+  async function get(path) {
+    const resp = await fetch(path, { headers: { accept: "application/json" } });
+    if (!resp.ok) throw new Error(`${path}: HTTP ${resp.status}`);
+    return resp.json();
+  }
+
+  // ---------- tooltip ----------
+  const tip = $("tooltip");
+  function showTip(el, html) {
+    tip.innerHTML = html;
+    tip.style.display = "block";
+    const r = el.getBoundingClientRect();
+    const w = tip.offsetWidth, h = tip.offsetHeight;
+    let x = Math.min(r.left + 12, window.innerWidth - w - 8);
+    let y = r.top - h - 8;
+    if (y < 8) y = r.bottom + 8;
+    tip.style.left = `${Math.max(8, x)}px`;
+    tip.style.top = `${y}px`;
+  }
+  const hideTip = () => { tip.style.display = "none"; };
+  window.addEventListener("scroll", hideTip, { passive: true });
+
+  // ---------- charts ----------
+  function niceMax(v) {
+    if (v <= 0) return 1;
+    const p = Math.pow(10, Math.floor(Math.log10(v)));
+    for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p;
+    return 10 * p;
+  }
+
+  function barChart(el, rows, { max, ticks, fmtTick, label, tipFor, refs = [] }) {
+    if (!rows.length) { el.innerHTML = '<p class="empty">No data in this window yet.</p>'; return; }
+    const pos = (v) => `${Math.max(0, Math.min(1, v / max)) * 100}%`;
+    const grid = ticks.slice(1).map((t) => `<i style="left:${pos(t)}"></i>`).join("")
+      + refs.map((r) => `<i class="ref" style="left:${pos(r.value)}"></i><b style="left:${pos(r.value)}">${esc(r.label)}</b>`).join("");
+    const bars = rows.map((r, i) => {
+      const v = r.value ?? 0;
+      return `<div class="row"><span class="name" title="${esc(REGION_NAMES[r.region] || r.region)}">${esc(short(r.region))}</span>
+        <div class="track" tabindex="0" data-i="${i}" aria-label="${esc(REGION_NAMES[r.region] || r.region)}: ${esc(label(r))}">
+          <div class="bar" style="width:${pos(v)}"></div><span class="bar-label">${esc(label(r))}</span></div></div>`;
+    }).join("");
+    el.innerHTML = `<div class="rows"><div class="gridlines">${grid}</div>${bars}</div>
+      <div class="axis">${ticks.map((t) => `<span${t > 0 && t >= max ? ' class="end"' : ""} style="left:${pos(t)}">${esc(fmtTick(t))}</span>`).join("")}</div>`;
+    el.querySelectorAll(".track").forEach((t) => {
+      const r = rows[Number(t.dataset.i)];
+      const on = () => showTip(t, tipFor(r));
+      t.addEventListener("mouseenter", on);
+      t.addEventListener("focus", on);
+      t.addEventListener("mouseleave", hideTip);
+      t.addEventListener("blur", hideTip);
+    });
+  }
+
+  function regionTip(r) {
+    return `<div class="t">${esc(REGION_NAMES[r.region] || r.region)}</div>
+      <div class="kv">Energy <b>${nf0.format(r.energy_mwh ?? 0)} MWh</b></div>
+      <div class="kv">Avg performance <b>${pct(r.avg_performance_index)}</b></div>
+      <div class="kv">Farms <b>${nf0.format(r.facilities ?? 0)}</b></div>
+      <div class="kv">Underperforming now <b>${nf0.format(r.underperforming_latest ?? 0)}</b></div>
+      <div class="kv">Curtailed now <b>${nf0.format(r.curtailed_latest ?? 0)}</b></div>`;
+  }
+
+  function renderFleet(fleet) {
+    const regions = [...fleet].sort((a, b) => (b.energy_mwh ?? 0) - (a.energy_mwh ?? 0));
+    const total = regions.reduce((s, r) => s + (r.energy_mwh ?? 0), 0);
+    const farms = regions.reduce((s, r) => s + (r.facilities ?? 0), 0);
+    const scored = regions.filter((r) => r.avg_performance_index != null);
+    const weight = scored.reduce((s, r) => s + (r.facilities ?? 0), 0);
+    const avgPerf = weight ? scored.reduce((s, r) => s + r.avg_performance_index * (r.facilities ?? 0), 0) / weight : null;
+
+    $("k-energy").textContent = nf0.format(total);
+    $("k-energy-note").textContent = regions.length ? `across ${regions.length} regions` : "no data yet";
+    $("k-perf").textContent = pct(avgPerf);
+    $("k-farms").textContent = nf0.format(farms);
+    $("k-under").textContent = nf0.format(regions.reduce((s, r) => s + (r.underperforming_latest ?? 0), 0));
+    $("k-curt").textContent = nf0.format(regions.reduce((s, r) => s + (r.curtailed_latest ?? 0), 0));
+
+    const eMax = niceMax(Math.max(0, ...regions.map((r) => r.energy_mwh ?? 0)));
+    barChart($("chart-energy"), regions.map((r) => ({ ...r, value: r.energy_mwh })), {
+      max: eMax,
+      ticks: [0, eMax / 2, eMax],
+      fmtTick: (t) => nf0.format(t),
+      label: (r) => `${nf0.format(r.energy_mwh ?? 0)}`,
+      tipFor: regionTip,
+    });
+    const pMax = Math.max(1.2, Math.ceil(Math.max(0, ...scored.map((r) => r.avg_performance_index)) * 5) / 5);
+    barChart($("chart-perf"), regions.map((r) => ({ ...r, value: r.avg_performance_index })), {
+      max: pMax,
+      ticks: [0, 0.5, 1].filter((t) => t <= pMax),
+      fmtTick: (t) => `${t * 100}%`,
+      label: (r) => pct(r.avg_performance_index),
+      tipFor: regionTip,
+      refs: [{ value: THRESHOLD, label: "60% flag" }],
+    });
+
+    $("region-table").innerHTML = regions.map((r) => `<tr><td>${esc(REGION_NAMES[r.region] || r.region)}</td>
+      <td class="num">${nf0.format(r.facilities ?? 0)}</td><td class="num">${nf1.format(r.energy_mwh ?? 0)}</td>
+      <td class="num">${pct(r.avg_performance_index)}</td><td class="num">${nf0.format(r.underperforming_latest ?? 0)}</td>
+      <td class="num">${nf0.format(r.curtailed_latest ?? 0)}</td><td class="num">${nf1.format(r.curtailed_mwh ?? 0)}</td></tr>`).join("")
+      || '<tr><td colspan="7">No data yet.</td></tr>';
+  }
+
+  function farmRow(f, right) {
+    return `<div class="farm"><div><div class="fname">${esc(f.facility_name || f.facility_code)}</div>
+      <div class="meta">${esc(short(f.region))} · ${nf1.format(f.actual_mw ?? 0)} of ${nf1.format(f.expected_mw ?? 0)} MW expected</div></div>
+      <div class="right">${right}</div></div>`;
+  }
+
+  function renderUnder(farms) {
+    if (farms.length) $("under-note").textContent = `At the latest daylight interval, ${nem.format(new Date(farms[0].interval_end))}`;
+    $("list-under").innerHTML = farms.length
+      ? farms.map((f) => farmRow(f, `${badge("critical", "Underperforming")}<div class="meta">${pct(f.performance_index)} of expected</div>`)).join("")
+      : `<p class="empty">${badge("good", "All clear")} No farm is below 60% of expected output.</p>`;
+  }
+
+  function renderCurtailed(farms) {
+    $("list-curt").innerHTML = farms.length
+      ? farms.map((f) => {
+          const confirmed = f.status === "curtailed";
+          const detail = confirmed
+            ? `${nf1.format(f.curtailed_mw ?? 0)} MW held back`
+            : f.price_per_mwh != null ? `price ${money(f.price_per_mwh)}/MWh` : "negative prices";
+          return farmRow(f, `${badge(confirmed ? "serious" : "warning", confirmed ? "Curtailed" : "Likely curtailed")}<div class="meta">${esc(detail)}</div>`);
+        }).join("")
+      : `<p class="empty">${badge("good", "None")} No farm is being held back right now.</p>`;
+  }
+
+  function renderStatus(s) {
+    const lag = s.data_lag_minutes;
+    const kind = lag == null ? "critical" : lag <= 15 ? "good" : lag <= 30 ? "warning" : "critical";
+    const word = lag == null ? "No data" : lag <= 15 ? "Live" : lag <= 30 ? "Delayed" : "Stale";
+    const el = $("fresh-badge");
+    el.classList.remove("skeleton");
+    el.innerHTML = `${ICONS[kind]}${word}`;
+    $("fresh-note").textContent = s.latest_interval
+      ? `Latest interval ${nem.format(new Date(s.latest_interval))} AEST · ${nf0.format(lag)} min ago`
+      : "Waiting for the first AEMO interval";
+    if (s.facilities != null) $("k-farms-note").textContent = `of ${nf0.format(s.facilities)} in the registry`;
+  }
+
+  async function refresh() {
+    const results = await Promise.allSettled([
+      get("public/status"), get("public/fleet?hours=24"), get("public/underperformers"), get("public/curtailed"),
+    ]);
+    const [status, fleet, under, curt] = results;
+    if (status.status === "fulfilled") renderStatus(status.value);
+    if (fleet.status === "fulfilled") renderFleet(fleet.value);
+    if (under.status === "fulfilled") renderUnder(under.value);
+    if (curt.status === "fulfilled") renderCurtailed(curt.value);
+    const failed = results.filter((r) => r.status === "rejected");
+    const banner = $("banner");
+    if (failed.length) {
+      banner.innerHTML = `${ICONS.warning}<span>Some data could not be loaded (${esc(failed[0].reason.message)}). Showing the last values received; retrying in 5 minutes.</span>`;
+      banner.classList.add("show");
+    } else {
+      banner.classList.remove("show");
+    }
+    $("updated").textContent = `Page updated ${nemTime.format(new Date())} · refreshes every 5 minutes`;
+    lastRefresh = Date.now();
+  }
+
+  // Relative URLs resolve against /dashboard's parent, i.e. the API root.
+  let lastRefresh = 0;
+  const due = () => !document.hidden && Date.now() - lastRefresh >= REFRESH_MS;
+  refresh();
+  setInterval(() => { if (due()) refresh(); }, 15 * 1000);
+  document.addEventListener("visibilitychange", () => { if (due()) refresh(); });
+})();
+</script>
+</body>
+</html>

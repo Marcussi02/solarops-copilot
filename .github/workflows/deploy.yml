@@ -79,6 +79,10 @@ jobs:
             --query Parameter.Value --output text)
           echo "::add-mask::$key"
           curl -fsS "$url/health"
+          curl -fsS "$url/public/status"
+          curl -fsS -o /dev/null "$url/public/fleet?hours=24"
+          curl -fsS "$url/dashboard" | grep -q "<title>SolarOps live fleet</title>"
+          test "$(curl -s -o /dev/null -w '%{http_code}' "$url/v1/status")" = 401  # still keyed
           curl -fsS -o /dev/null -H "x-api-key: $key" "$url/v1/curtailed"
           curl -fsS -H "x-api-key: $key" -H "content-type: application/json" \
             -d '{"question":"Which solar farms are underperforming right now?"}' "$url/v1/ask" \
@@ -86,4 +90,4 @@ jobs:
           curl -fsS -H "x-api-key: $key" -H "content-type: application/json" \
             -d '{"question":"How can I tell if a farm was curtailed rather than faulty?"}' "$url/v1/ask" \
             | python -c "import json,sys; b=json.load(sys.stdin); assert b['sources'], 'no sources'; print(b['answer']); print([s['id'] for s in b['sources']])"
-          echo "API: $url  (docs: $url/docs)" >> "$GITHUB_STEP_SUMMARY"
+          echo "API: $url  (docs: $url/docs, dashboard: $url/dashboard)" >> "$GITHUB_STEP_SUMMARY"
