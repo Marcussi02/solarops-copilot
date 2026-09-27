@@ -131,6 +131,13 @@ Resources:
                   - cloudwatch:DescribeAlarms
                   - cloudwatch:TagResource
                 Resource: "*"
+              - Sid: Dashboard
+                Effect: Allow
+                Action:
+                  - cloudwatch:PutDashboard
+                  - cloudwatch:GetDashboard
+                  - cloudwatch:DeleteDashboards
+                Resource: !Sub arn:aws:cloudwatch::${AWS::AccountId}:dashboard/${StackName}
               - Sid: SmokeTestKey
                 Effect: Allow
                 Action: ssm:GetParameter

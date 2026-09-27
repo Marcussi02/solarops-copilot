@@ -7,14 +7,57 @@
 A provider does two things: pick one tool call for a question, and turn the tool's
 JSON result into a short answer. It only ever sees tool results, never the
 database, so every number in an answer comes from a fixed, parameterised query.
+
+Model providers also count the tokens each response reports, so the copilot can
+publish token and cost metrics. Cost uses list prices per million tokens below;
+set LLM_PRICE_INPUT_PER_MTOK / LLM_PRICE_OUTPUT_PER_MTOK for other models or regions.
 """
 
 import json
 import os
+import re
 import urllib.request
+from dataclasses import dataclass
 
+from ..observability import tracer
 from .router import RuleBasedProvider
 from .types import ProviderError, ToolCall
+
+# USD per million (input, output) tokens, on-demand list prices.
+PRICES_PER_MTOK = {
+    "amazon.nova-micro-v1:0": (0.035, 0.14),
+    "amazon.nova-lite-v1:0": (0.06, 0.24),
+    "amazon.nova-pro-v1:0": (0.80, 3.20),
+    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4o": (2.50, 10.00),
+}
+
+
+@dataclass
+class Usage:
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+    def add(self, input_tokens, output_tokens) -> None:
+        self.input_tokens += int(input_tokens or 0)
+        self.output_tokens += int(output_tokens or 0)
+
+
+def price_per_mtok(model: str) -> tuple[float, float]:
+    """(input, output) USD per million tokens; env overrides, else the list price.
+    Cross-region inference profiles (apac., us., eu., global.) price as the base model."""
+    base = re.sub(r"^(apac|us|eu|global)\.", "", model)
+    listed = PRICES_PER_MTOK.get(base, (0.0, 0.0))
+    return (
+        float(os.environ.get("LLM_PRICE_INPUT_PER_MTOK") or listed[0]),
+        float(os.environ.get("LLM_PRICE_OUTPUT_PER_MTOK") or listed[1]),
+    )
+
+
+def cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
+    price_in, price_out = price_per_mtok(model)
+    return (input_tokens * price_in + output_tokens * price_out) / 1_000_000
+
 
 ROUTE_PROMPT = (
     "You route questions about Australian utility-scale solar farms (AEMO NEM data) to "
@@ -53,6 +96,11 @@ class BedrockProvider:
     def __init__(self, model_id: str | None = None, client=None):
         self.model_id = model_id or os.environ.get("BEDROCK_MODEL_ID", "amazon.nova-lite-v1:0")
         self._client = client
+        self.usage = Usage()
+
+    @property
+    def model(self) -> str:
+        return self.model_id
 
     @property
     def client(self):
@@ -62,10 +110,16 @@ class BedrockProvider:
             self._client = boto3.client("bedrock-runtime")
         return self._client
 
+    def _converse(self, **kwargs) -> dict:
+        resp = self.client.converse(modelId=self.model_id, **kwargs)
+        usage = resp.get("usage") or {}
+        self.usage.add(usage.get("inputTokens"), usage.get("outputTokens"))
+        return resp
+
+    @tracer.capture_method(capture_response=False)
     def choose_tool(self, question: str, specs: list[dict], context: dict) -> ToolCall:
         try:
-            resp = self.client.converse(
-                modelId=self.model_id,
+            resp = self._converse(
                 system=[{"text": ROUTE_PROMPT}],
                 messages=[{"role": "user", "content": [{"text": question}]}],
                 toolConfig={
@@ -90,10 +144,10 @@ class BedrockProvider:
                 return ToolCall(block["toolUse"]["name"], block["toolUse"].get("input") or {})
         raise ProviderError("bedrock returned no tool call")
 
+    @tracer.capture_method(capture_response=False)
     def summarise(self, question: str, call: ToolCall, result: dict) -> str:
         try:
-            resp = self.client.converse(
-                modelId=self.model_id,
+            resp = self._converse(
                 system=[{"text": answer_prompt(call)}],
                 messages=[
                     {"role": "user", "content": [{"text": _answer_input(question, call, result)}]}
@@ -113,6 +167,7 @@ class OpenAIProvider:
         self.model = model or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
         self._api_key = api_key
         self._post = post or self._http_post
+        self.usage = Usage()
 
     @property
     def api_key(self) -> str:
@@ -135,12 +190,16 @@ class OpenAIProvider:
 
     def _call(self, body: dict) -> dict:
         try:
-            return self._post({"model": self.model, "temperature": 0, **body})
+            resp = self._post({"model": self.model, "temperature": 0, **body})
         except ProviderError:
             raise
         except Exception as exc:
             raise ProviderError(f"openai request failed: {exc}") from exc
+        usage = (resp.get("usage") if isinstance(resp, dict) else None) or {}
+        self.usage.add(usage.get("prompt_tokens"), usage.get("completion_tokens"))
+        return resp
 
+    @tracer.capture_method(capture_response=False)
     def choose_tool(self, question: str, specs: list[dict], context: dict) -> ToolCall:
         resp = self._call(
             {
@@ -168,6 +227,7 @@ class OpenAIProvider:
         except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
             raise ProviderError("openai returned no usable tool call") from exc
 
+    @tracer.capture_method(capture_response=False)
     def summarise(self, question: str, call: ToolCall, result: dict) -> str:
         resp = self._call(
             {

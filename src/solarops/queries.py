@@ -5,13 +5,15 @@ run and with which (validated, bounded) arguments. It never writes SQL itself.
 
 Time windows are measured back from the latest ingested interval rather than
 ``now()``, so answers stay meaningful when ingestion is lagging and tests are
-deterministic.
+deterministic. Each query runs in its own X-Ray subsegment when deployed.
 """
 
 from datetime import datetime
 from decimal import Decimal
 
 import psycopg
+
+from .observability import tracer
 
 # Performance index below this counts as underperforming.
 DEFAULT_THRESHOLD = 0.6
@@ -30,12 +32,14 @@ def _plain(value):
     return float(value) if isinstance(value, Decimal) else value
 
 
+@tracer.capture_method(capture_response=False)
 def latest_interval(conn: psycopg.Connection) -> datetime | None:
     value = conn.execute("SELECT max(interval_end) FROM scada_readings").fetchone()[0]
     conn.commit()
     return value
 
 
+@tracer.capture_method(capture_response=False)
 def facilities(conn: psycopg.Connection, region: str | None = None) -> list[dict]:
     return _rows(
         conn,
@@ -57,6 +61,7 @@ def facility_names(conn: psycopg.Connection) -> list[tuple[str, str]]:
     return [(r["facility_code"], r["facility_name"]) for r in facilities(conn)]
 
 
+@tracer.capture_method(capture_response=False)
 def find_facility(conn: psycopg.Connection, text: str) -> dict | None:
     """Resolve a facility by exact code, else by the shortest name containing `text`."""
     text = text.strip()
@@ -77,6 +82,7 @@ def find_facility(conn: psycopg.Connection, text: str) -> dict | None:
     return rows[0] if rows else None
 
 
+@tracer.capture_method(capture_response=False)
 def underperformers(
     conn: psycopg.Connection,
     threshold: float = DEFAULT_THRESHOLD,
@@ -108,6 +114,7 @@ def underperformers(
     )
 
 
+@tracer.capture_method(capture_response=False)
 def curtailed_farms(
     conn: psycopg.Connection, limit: int = 10, region: str | None = None
 ) -> list[dict]:
@@ -147,6 +154,7 @@ _WINDOW = """
 """
 
 
+@tracer.capture_method(capture_response=False)
 def facility_report(conn: psycopg.Connection, facility_code: str, hours: int) -> dict:
     """Summary plus hourly profile for one facility over the last `hours`."""
     params = {"code": facility_code, "hours": hours}
@@ -185,6 +193,7 @@ def facility_report(conn: psycopg.Connection, facility_code: str, hours: int) ->
     return {"summary": summary, "hourly": hourly}
 
 
+@tracer.capture_method(capture_response=False)
 def fleet_summary(conn: psycopg.Connection, hours: int, region: str | None = None) -> list[dict]:
     """Per-region energy and average performance over the last `hours`."""
     return _rows(

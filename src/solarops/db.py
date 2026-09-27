@@ -8,6 +8,7 @@ import psycopg
 
 from .dispatch import RegionPrice, UnitDispatch
 from .nemweb import Reading
+from .observability import tracer
 from .registry import SolarUnit
 from .weather import Site, WeatherObs
 
@@ -72,6 +73,7 @@ def migrate(conn: psycopg.Connection) -> list[str]:
 
 # ---------- registry ----------
 
+@tracer.capture_method(capture_response=False)
 def upsert_units(conn: psycopg.Connection, units: Iterable[SolarUnit]) -> int:
     rows = [
         (u.duid, u.facility_code, u.facility_name, u.region, u.latitude, u.longitude, u.capacity_mw)
@@ -122,6 +124,7 @@ def processed_files(conn: psycopg.Connection, names: list[str]) -> set[str]:
     return {row[0] for row in rows}
 
 
+@tracer.capture_method(capture_response=False)
 def ingest_file(
     conn: psycopg.Connection,
     file_name: str,
@@ -162,6 +165,7 @@ def record_file(
 
 # ---------- dispatch outcomes (curtailment) ----------
 
+@tracer.capture_method(capture_response=False)
 def ingest_prices(
     conn: psycopg.Connection, file_name: str, interval_end: datetime, prices: list[RegionPrice]
 ) -> int:
@@ -177,6 +181,7 @@ def ingest_prices(
     return len(prices)
 
 
+@tracer.capture_method(capture_response=False)
 def ingest_unit_dispatch(
     conn: psycopg.Connection, file_name: str, day: datetime, rows: list[UnitDispatch]
 ) -> int:
@@ -204,6 +209,7 @@ def ingest_unit_dispatch(
 
 # ---------- weather ----------
 
+@tracer.capture_method(capture_response=False)
 def upsert_weather(conn: psycopg.Connection, observations: Iterable[WeatherObs]) -> int:
     rows = [
         (o.facility_code, o.observed_at, o.ghi_wm2, o.temp_c, o.cloud_cover_pct)
@@ -226,6 +232,7 @@ def upsert_weather(conn: psycopg.Connection, observations: Iterable[WeatherObs])
 
 # ---------- reads ----------
 
+@tracer.capture_method(capture_response=False)
 def status(conn: psycopg.Connection) -> dict:
     row = conn.execute(
         """
@@ -253,6 +260,7 @@ def underperformers(
 
 # ---------- retention ----------
 
+@tracer.capture_method(capture_response=False)
 def prune(conn: psycopg.Connection, days: int) -> dict:
     """Delete telemetry older than `days`. Keeps a free-tier database within its quota.
 

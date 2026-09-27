@@ -20,7 +20,7 @@ def aws_env(monkeypatch):
         monkeypatch.setenv(key, value)
 
 
-def test_ingest_handler_reports_only_failed_messages(seeded, monkeypatch):
+def test_ingest_handler_reports_only_failed_messages(seeded, monkeypatch, lambda_context):
     monkeypatch.setattr(handlers, "get_conn", lambda: seeded)
     good = "PUBLIC_DISPATCHSCADA_202609251200_0000000000000001.zip"
     bad = "PUBLIC_DISPATCHSCADA_202609251205_0000000000000002.zip"
@@ -39,13 +39,15 @@ def test_ingest_handler_reports_only_failed_messages(seeded, monkeypatch):
             {"messageId": "m3", "body": "not json"},
         ]
     }
-    result = handlers.ingest_handler(event, None)
+    result = handlers.ingest_handler(event, lambda_context)
     assert result == {
         "batchItemFailures": [{"itemIdentifier": "m2"}, {"itemIdentifier": "m3"}]
     }
 
 
-def test_poll_handler_queues_pending_files_in_batches(seeded, monkeypatch, aws_env):
+def test_poll_handler_queues_pending_files_in_batches(
+    seeded, monkeypatch, aws_env, lambda_context
+):
     files = [
         f"PUBLIC_DISPATCHSCADA_20260925{h:02d}{m:02d}_00000000000{h:02d}{m:02d}.zip"
         for h in range(10, 12)
@@ -59,7 +61,7 @@ def test_poll_handler_queues_pending_files_in_batches(seeded, monkeypatch, aws_e
         monkeypatch.setenv("QUEUE_URL", queue_url)
         monkeypatch.setenv("MAX_FILES_PER_POLL", "20")
 
-        assert handlers.poll_handler({}, None) == {"queued": 20, "prices": 5}
+        assert handlers.poll_handler({}, lambda_context) == {"queued": 20, "prices": 5}
 
         attrs = boto3.client("sqs").get_queue_attributes(
             QueueUrl=queue_url, AttributeNames=["ApproximateNumberOfMessages"]
@@ -92,7 +94,9 @@ def test_failed_connection_forgets_cached_secret(monkeypatch):
     assert config.database_url.cache_info().currsize == 0
 
 
-def test_price_sync_failure_does_not_block_polling(seeded, monkeypatch, aws_env):
+def test_price_sync_failure_does_not_block_polling(
+    seeded, monkeypatch, aws_env, lambda_context
+):
     monkeypatch.setattr(handlers, "get_conn", lambda: seeded)
     monkeypatch.setattr(handlers.nemweb, "list_files", lambda: [])
 
@@ -103,4 +107,4 @@ def test_price_sync_failure_does_not_block_polling(seeded, monkeypatch, aws_env)
     with mock_aws():
         url = boto3.client("sqs").create_queue(QueueName="ingest")["QueueUrl"]
         monkeypatch.setenv("QUEUE_URL", url)
-        assert handlers.poll_handler({}, None) == {"queued": 0, "prices": None}
+        assert handlers.poll_handler({}, lambda_context) == {"queued": 0, "prices": None}

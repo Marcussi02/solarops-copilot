@@ -11,6 +11,9 @@ answer with no citation, or one citing a passage it was not given, is rejected
 and replaced by the extractive answer, so every claim traces to a source.
 Diagnostic questions about live data ("why is X low?") also get related guidance
 from the knowledge base attached as sources.
+
+Every answer publishes CopilotLatencyMs, token and cost metrics, and a
+CopilotFallbacks count by reason (the exception type) whenever a fallback happens.
 """
 
 import logging
@@ -21,8 +24,9 @@ from dataclasses import asdict, dataclass, field
 import psycopg
 
 from .. import queries
+from ..observability import MetricUnit, emit, tracer
 from . import tools
-from .llm import get_provider
+from .llm import cost_usd, get_provider
 from .router import DIAGNOSTIC, RuleBasedProvider
 from .types import ProviderError, ToolCall
 
@@ -64,14 +68,40 @@ def check_citations(text: str, result: dict) -> None:
         raise ProviderError(f"answer cites unknown passages {sorted(cited - given)}")
 
 
+def _tokens(provider) -> tuple[int, int]:
+    usage = getattr(provider, "usage", None)
+    return (usage.input_tokens, usage.output_tokens) if usage else (0, 0)
+
+
+def record_metrics(
+    answer: Answer, provider, tokens_before: tuple[int, int], fallback_kind: str | None
+) -> None:
+    """Latency, token usage and cost of one answer (tokens are 0 for the rules router)."""
+    after = _tokens(provider)
+    input_tokens, output_tokens = after[0] - tokens_before[0], after[1] - tokens_before[1]
+    model = getattr(provider, "model", None)
+    cost = cost_usd(model, input_tokens, output_tokens) if model else 0.0
+    emit("CopilotLatencyMs", answer.latency_ms, MetricUnit.Milliseconds)
+    emit("LlmInputTokens", input_tokens, MetricUnit.Count)
+    emit("LlmOutputTokens", output_tokens, MetricUnit.Count)
+    emit("LlmCostUsd", round(cost, 8), MetricUnit.NoUnit)
+    if fallback_kind:
+        emit("CopilotFallbacks", 1, MetricUnit.Count, reason=fallback_kind)
+    tracer.put_annotation("tool", answer.tool)
+    tracer.put_annotation("provider", answer.provider)
+    tracer.put_annotation("fallback", fallback_kind or "none")
+
+
+@tracer.capture_method(capture_response=False)
 def ask(conn: psycopg.Connection, question: str, provider=None) -> Answer:
     started = time.perf_counter()
     question = " ".join(question.split())[:MAX_QUESTION_CHARS]
     provider = provider or get_provider()
+    tokens_before = _tokens(provider)
     rules = RuleBasedProvider()
     context = {"facilities": queries.facility_names(conn)}
     specs = tools.tool_specs()
-    fallback_reason = None
+    fallback_reason = fallback_kind = None
 
     try:
         call = provider.choose_tool(question, specs, context)
@@ -79,6 +109,7 @@ def ask(conn: psycopg.Connection, question: str, provider=None) -> Answer:
         answerer = provider
     except Exception as exc:  # provider failure or invalid proposal: use the router
         fallback_reason = f"{type(exc).__name__}: {exc}"[:300]
+        fallback_kind = type(exc).__name__
         logger.warning("copilot routing fell back to rules: %s", fallback_reason)
         call = rules.choose_tool(question, specs, context)
         answerer = rules
@@ -93,6 +124,7 @@ def ask(conn: psycopg.Connection, question: str, provider=None) -> Answer:
             check_citations(text, result)
     except Exception as exc:
         fallback_reason = fallback_reason or f"{type(exc).__name__}: {exc}"[:300]
+        fallback_kind = fallback_kind or type(exc).__name__
         answerer = rules
         text = rules.summarise(question, call, result)
 
@@ -105,7 +137,7 @@ def ask(conn: psycopg.Connection, question: str, provider=None) -> Answer:
                 f"{s['title']} - {s['section']} [{s['n']}]" for s in sources
             ) + "."
 
-    return Answer(
+    answer = Answer(
         question=question,
         answer=text,
         tool=call.name,
@@ -116,3 +148,5 @@ def ask(conn: psycopg.Connection, question: str, provider=None) -> Answer:
         latency_ms=round((time.perf_counter() - started) * 1000),
         sources=sources,
     )
+    record_metrics(answer, provider, tokens_before, fallback_kind)
+    return answer
