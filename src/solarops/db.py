@@ -35,6 +35,16 @@ def connect_configured() -> psycopg.Connection:
         raise
 
 
+def connect_read_only() -> psycopg.Connection:
+    """A session for serving reads: READ ONLY transactions and a 5-second statement
+    timeout, so no caller (API, copilot, MCP client) can write or run away."""
+    conn = connect_configured()
+    conn.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
+    conn.execute("SET statement_timeout = '5s'")
+    conn.commit()
+    return conn
+
+
 # ---------- migrations ----------
 
 def migrate(conn: psycopg.Connection) -> list[str]:
