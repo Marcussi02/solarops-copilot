@@ -1,6 +1,7 @@
 import io
 import os
 import zipfile
+from types import SimpleNamespace
 
 import pytest
 
@@ -50,3 +51,15 @@ def conn():
 def seeded(conn):
     db.upsert_units(conn, UNITS)
     return conn
+
+
+@pytest.fixture
+def lambda_context():
+    """The attributes Powertools reads from a real Lambda context object."""
+    return SimpleNamespace(
+        function_name="test-fn",
+        function_version="$LATEST",
+        memory_limit_in_mb=256,
+        invoked_function_arn="arn:aws:lambda:ap-southeast-2:123456789012:function:test-fn",
+        aws_request_id="req-123",
+    )

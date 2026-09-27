@@ -33,6 +33,8 @@ AWS console → **CloudFormation** → *Create stack* → *With new resources* �
 
 When it reaches `CREATE_COMPLETE`, copy **`DeployRoleArn`** from the *Outputs* tab.
 
+If `infra/bootstrap.yaml` changes later (for example, when the observability dashboard added `cloudwatch:PutDashboard`), update this stack first: select `solarops-bootstrap` → **Update** → *Replace existing template* → upload the new file, keep the parameters, and submit. The deploy role can't change its own permissions.
+
 ## 3. Secrets (SSM Parameter Store)
 
 AWS console → **Systems Manager** → **Parameter Store** → *Create parameter*. Create three parameters, each of type **SecureString**:

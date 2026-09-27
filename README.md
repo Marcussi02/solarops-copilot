@@ -35,7 +35,7 @@ Real response from a run on live AEMO data (26 Sep 2026):
 
 The same run answered *"How did the fleet do in the last 8 hours?"* with **37,907.7 MWh from 114 farms across NSW, QLD, VIC and SA**. It ingested 96 five-minute files (11,712 readings) in about 100 seconds.
 
-> **Status:** Phase 1 (ingestion) ✅ · Phase 2 (API, copilot, evals, AWS deploy) ✅ · Phase 3 (RAG over an O&M knowledge base, with citations and retrieval evals) ✅ · Phase 4 (MCP server) ✅ · Curtailment-aware scoring ✅ · Next: observability and a public dashboard. See the [Roadmap](#roadmap).
+> **Status:** Phase 1 (ingestion) ✅ · Phase 2 (API, copilot, evals, AWS deploy) ✅ · Phase 3 (RAG over an O&M knowledge base, with citations and retrieval evals) ✅ · Phase 4 (MCP server) ✅ · Curtailment-aware scoring ✅ · Phase 5 (observability) ✅ · Next: a public dashboard. See the [Roadmap](#roadmap).
 
 ## Architecture
 
@@ -177,6 +177,24 @@ Live deployment: [interactive docs](https://h12xi690he.execute-api.ap-southeast-
 | `GET /v1/docs/search?q=&k=4` | Top passages for a query, numbered for citation, with the corpus version |
 | `POST /v1/ask` | Natural-language question → grounded answer with trace and `sources` |
 
+## Observability
+
+Built on [AWS Lambda Powertools](https://docs.powertools.aws.dev/lambda/python/) ([`observability.py`](src/solarops/observability.py)), and inert outside Lambda, so the CLI and the MCP server's stdio stay clean.
+
+- **Tracing.** X-Ray active tracing on every function, with subsegments for each catalogue query and write, each model call, and AWS SDK and HTTP calls. Copilot traces are annotated with `tool`, `provider` and `fallback`.
+- **Logs.** JSON lines with the function request id plus a correlation id: the API Gateway request id for the API, and the SQS message id for ingestion. Events are never logged, and the formatter masks connection-string credentials, API keys and bearer tokens, even inside tracebacks.
+- **Metrics** (namespace `SolarOps`, written as EMF log lines, so there are no `PutMetricData` calls):
+
+| Metric | Source | Dimensions |
+|---|---|---|
+| `ApiLatencyMs` | every API request | `route` (the template, e.g. `/v1/facilities/{code}`) |
+| `CopilotLatencyMs`, `LlmInputTokens`, `LlmOutputTokens`, `LlmCostUsd` | every copilot answer; tokens come from the Bedrock/OpenAI usage report and cost from list prices (`LLM_PRICE_*_PER_MTOK` to override), both 0 with `LLM_PROVIDER=none` | |
+| `CopilotFallbacks` | whenever the copilot falls back to the rules router | `reason` (exception type) |
+| `IngestLagMinutes`, `CurtailedFarms` | every poll (5 min) | |
+| `RowsIngested` | every ingest batch | |
+
+The stack deploys a CloudWatch dashboard (stack output `DashboardUrl`) with API requests, errors and p95 latency by route; copilot latency and fallbacks; LLM tokens and cost; ingest lag and rows; DLQ depth; curtailed farms; and Lambda errors and p95 duration per function. A **staleness alarm** fires when `IngestLagMinutes` stays above 30 for three 5-minute periods, or when the metric stops arriving, and notifies the same email topic as the other alarms.
+
 ## Design decisions
 
 | Decision | Why |
@@ -213,7 +231,7 @@ python -m solarops.cli ask "How did the fleet do in the last 6 hours?"
 uvicorn solarops.api:app --reload           # API on http://localhost:8000/docs
 ```
 
-Tests: 67 unit and integration tests. The integration tests need a Postgres, and CI provides one.
+Tests: 125 unit and integration tests. The integration tests need a Postgres, and CI provides one.
 
 ```bash
 export TEST_DATABASE_URL=postgresql://solarops:solarops@localhost:5432/solarops
@@ -230,7 +248,7 @@ Pushes to `main` deploy automatically once CI passes. The one-time setup is abou
 
 The workflow builds with SAM, deploys, loads the solar farm registry, and smoke-tests `/health` and `/v1/ask`.
 
-**Expected cost: about US$0/month.** Around 20k Lambda invocations a month, SQS, EventBridge Scheduler, SSM and three alarms all fit the AWS free tiers, and Supabase's free Postgres holds 30 days of telemetry. Bedrock, if you turn it on, costs fractions of a cent per question.
+**Expected cost: about US$0/month.** Around 20k Lambda invocations a month, SQS, EventBridge Scheduler, SSM, X-Ray traces, one dashboard and four alarms all fit the AWS free tiers, and Supabase's free Postgres holds 30 days of telemetry. Custom metrics are free for the first 10. Each extra `route` or `reason` series is billed pro rata for only the hours it receives data (US$0.30 per metric-month), so light API traffic adds cents. Bedrock, if you turn it on, costs fractions of a cent per question, and `LlmCostUsd` shows exactly how much.
 
 ## Known limitations
 
@@ -248,7 +266,8 @@ These are deliberate simplifications, found and measured against live data:
 - [x] **Phase 3: RAG.** O&M knowledge base, BM25 with optional hybrid embeddings, enforced citations, retrieval evals as a CI gate.
 - [ ] **Manufacturer documents.** Ingest inverter and tracker manuals (PDF) for the specific equipment at each site, where licences allow.
 - [x] **Phase 4: MCP server.** The same tool catalogue exposed over the Model Context Protocol, with tests over an in-memory MCP session.
-- [ ] **Phase 5: observability.** Tracing, and cost and latency dashboards for the copilot.
+- [x] **Phase 5: observability.** X-Ray tracing, JSON logs with correlation ids, EMF metrics for latency, fallbacks, tokens and cost, a CloudWatch dashboard and a staleness alarm.
+- [ ] **Public dashboard.** An unauthenticated, cached, read-only view of fleet performance.
 
 ## Data sources and terms
 

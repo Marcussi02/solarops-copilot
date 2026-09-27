@@ -57,12 +57,15 @@ Globals:
     CodeUri: src/
     MemorySize: 256
     Timeout: 60
+    Tracing: Active # X-Ray; SAM adds the write permissions
     Environment:
       Variables:
         DATABASE_URL_PARAM: !Sub /${DatabaseUrlParam}
         OPENELECTRICITY_API_KEY_PARAM: !Sub /${OpenElectricityKeyParam}
         RAW_BUCKET: !Ref RawBucket
         QUEUE_URL: !Ref IngestQueue
+        POWERTOOLS_SERVICE_NAME: solarops
+        POWERTOOLS_METRICS_NAMESPACE: SolarOps
 
 Resources:
   # ---------------- ingestion (Phase 1) ----------------
@@ -259,6 +262,158 @@ Resources:
             Path: /{proxy+}
             Method: ANY
 
+  # ---------------- observability ----------------
+
+  # Custom metrics are written as EMF log lines by solarops/observability.py
+  # (namespace SolarOps, dimension service=solarops, plus route / reason where noted).
+  Dashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub ${AWS::StackName}
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {"type": "metric", "x": 0, "y": 0, "width": 12, "height": 6, "properties": {
+              "title": "API requests and errors",
+              "region": "${AWS::Region}",
+              "view": "timeSeries",
+              "stacked": false,
+              "stat": "Sum",
+              "period": 300,
+              "metrics": [
+                ["AWS/ApiGateway", "Count", "ApiId", "${HttpApi}", {"label": "requests"}],
+                ["AWS/ApiGateway", "4xx", "ApiId", "${HttpApi}", {"label": "4xx"}],
+                ["AWS/ApiGateway", "5xx", "ApiId", "${HttpApi}", {"label": "5xx"}]
+              ]}},
+            {"type": "metric", "x": 12, "y": 0, "width": 12, "height": 6, "properties": {
+              "title": "API p95 latency (ms)",
+              "region": "${AWS::Region}",
+              "view": "timeSeries",
+              "stacked": false,
+              "stat": "p95",
+              "period": 300,
+              "metrics": [
+                ["AWS/ApiGateway", "Latency", "ApiId", "${HttpApi}", {"label": "API Gateway p95"}],
+                [{"expression": "SEARCH('{SolarOps,service,route} MetricName=\"ApiLatencyMs\"', 'p95', 300)", "id": "routes", "label": ""}]
+              ]}},
+            {"type": "metric", "x": 0, "y": 6, "width": 12, "height": 6, "properties": {
+              "title": "Copilot latency (ms)",
+              "region": "${AWS::Region}",
+              "view": "timeSeries",
+              "stacked": false,
+              "stat": "p95",
+              "period": 300,
+              "metrics": [
+                ["SolarOps", "CopilotLatencyMs", "service", "solarops", {"stat": "p50", "label": "p50"}],
+                ["SolarOps", "CopilotLatencyMs", "service", "solarops", {"stat": "p95", "label": "p95"}]
+              ]}},
+            {"type": "metric", "x": 12, "y": 6, "width": 12, "height": 6, "properties": {
+              "title": "Copilot fallbacks by reason",
+              "region": "${AWS::Region}",
+              "view": "timeSeries",
+              "stacked": false,
+              "stat": "Sum",
+              "period": 300,
+              "metrics": [
+                [{"expression": "SEARCH('{SolarOps,service,reason} MetricName=\"CopilotFallbacks\"', 'Sum', 300)", "id": "fallbacks", "label": ""}]
+              ]}},
+            {"type": "metric", "x": 0, "y": 12, "width": 12, "height": 6, "properties": {
+              "title": "LLM tokens",
+              "region": "${AWS::Region}",
+              "view": "timeSeries",
+              "stacked": false,
+              "stat": "Sum",
+              "period": 300,
+              "metrics": [
+                ["SolarOps", "LlmInputTokens", "service", "solarops", {"label": "input"}],
+                ["SolarOps", "LlmOutputTokens", "service", "solarops", {"label": "output"}]
+              ]}},
+            {"type": "metric", "x": 12, "y": 12, "width": 12, "height": 6, "properties": {
+              "title": "LLM cost (USD per hour)",
+              "region": "${AWS::Region}",
+              "view": "timeSeries",
+              "stacked": false,
+              "stat": "Sum",
+              "period": 3600,
+              "metrics": [
+                ["SolarOps", "LlmCostUsd", "service", "solarops", {"label": "cost"}]
+              ]}},
+            {"type": "metric", "x": 0, "y": 18, "width": 12, "height": 6, "properties": {
+              "title": "Ingest lag (minutes behind the latest AEMO interval)",
+              "region": "${AWS::Region}",
+              "view": "timeSeries",
+              "stacked": false,
+              "stat": "Maximum",
+              "period": 300,
+              "annotations": {"horizontal": [{"label": "stale", "value": 30}]},
+              "metrics": [
+                ["SolarOps", "IngestLagMinutes", "service", "solarops", {"label": "lag"}]
+              ]}},
+            {"type": "metric", "x": 12, "y": 18, "width": 12, "height": 6, "properties": {
+              "title": "Rows ingested (solar readings)",
+              "region": "${AWS::Region}",
+              "view": "timeSeries",
+              "stacked": false,
+              "stat": "Sum",
+              "period": 300,
+              "metrics": [
+                ["SolarOps", "RowsIngested", "service", "solarops", {"label": "rows"}]
+              ]}},
+            {"type": "metric", "x": 0, "y": 24, "width": 12, "height": 6, "properties": {
+              "title": "Dead-letter queue depth",
+              "region": "${AWS::Region}",
+              "view": "timeSeries",
+              "stacked": false,
+              "stat": "Maximum",
+              "period": 300,
+              "metrics": [
+                ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "${IngestDLQ.QueueName}", {"label": "DLQ messages"}]
+              ]}},
+            {"type": "metric", "x": 12, "y": 24, "width": 12, "height": 6, "properties": {
+              "title": "Curtailed farms (latest scored interval)",
+              "region": "${AWS::Region}",
+              "view": "timeSeries",
+              "stacked": false,
+              "stat": "Maximum",
+              "period": 300,
+              "metrics": [
+                ["SolarOps", "CurtailedFarms", "service", "solarops", {"label": "farms"}]
+              ]}},
+            {"type": "metric", "x": 0, "y": 30, "width": 12, "height": 6, "properties": {
+              "title": "Lambda errors per function",
+              "region": "${AWS::Region}",
+              "view": "timeSeries",
+              "stacked": false,
+              "stat": "Sum",
+              "period": 300,
+              "metrics": [
+                ["AWS/Lambda", "Errors", "FunctionName", "${PollFunction}", {"label": "Poll"}],
+                ["AWS/Lambda", "Errors", "FunctionName", "${IngestFunction}", {"label": "Ingest"}],
+                ["AWS/Lambda", "Errors", "FunctionName", "${RegistryFunction}", {"label": "Registry"}],
+                ["AWS/Lambda", "Errors", "FunctionName", "${WeatherFunction}", {"label": "Weather"}],
+                ["AWS/Lambda", "Errors", "FunctionName", "${DispatchFunction}", {"label": "Dispatch"}],
+                ["AWS/Lambda", "Errors", "FunctionName", "${RetentionFunction}", {"label": "Retention"}],
+                ["AWS/Lambda", "Errors", "FunctionName", "${ApiFunction}", {"label": "Api"}]
+              ]}},
+            {"type": "metric", "x": 12, "y": 30, "width": 12, "height": 6, "properties": {
+              "title": "Lambda p95 duration per function (ms)",
+              "region": "${AWS::Region}",
+              "view": "timeSeries",
+              "stacked": false,
+              "stat": "p95",
+              "period": 300,
+              "metrics": [
+                ["AWS/Lambda", "Duration", "FunctionName", "${PollFunction}", {"label": "Poll"}],
+                ["AWS/Lambda", "Duration", "FunctionName", "${IngestFunction}", {"label": "Ingest"}],
+                ["AWS/Lambda", "Duration", "FunctionName", "${RegistryFunction}", {"label": "Registry"}],
+                ["AWS/Lambda", "Duration", "FunctionName", "${WeatherFunction}", {"label": "Weather"}],
+                ["AWS/Lambda", "Duration", "FunctionName", "${DispatchFunction}", {"label": "Dispatch"}],
+                ["AWS/Lambda", "Duration", "FunctionName", "${RetentionFunction}", {"label": "Retention"}],
+                ["AWS/Lambda", "Duration", "FunctionName", "${ApiFunction}", {"label": "Api"}]
+              ]}}
+          ]
+        }
+
   # ---------------- alarms ----------------
 
   AlarmTopic:
@@ -303,6 +458,25 @@ Resources:
       TreatMissingData: notBreaching
       AlarmActions: !If [HasAlarmEmail, [!Ref AlarmTopic], !Ref AWS::NoValue]
 
+  StaleDataAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: >-
+        Latest SCADA interval is more than 30 minutes old. Missing data also alarms:
+        it means the poller itself has stopped reporting.
+      Namespace: SolarOps
+      MetricName: IngestLagMinutes
+      Dimensions:
+        - Name: service
+          Value: solarops
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 30
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: breaching
+      AlarmActions: !If [HasAlarmEmail, [!Ref AlarmTopic], !Ref AWS::NoValue]
+
   ApiErrorsAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -330,3 +504,6 @@ Outputs:
     Value: !Ref IngestQueue
   DeadLetterQueueUrl:
     Value: !Ref IngestDLQ
+  DashboardUrl:
+    Description: CloudWatch dashboard for the API, copilot, LLM spend and ingestion
+    Value: !Sub https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${Dashboard}

@@ -15,6 +15,10 @@
 enforced by API Gateway throttling (see template.yaml), and read endpoints are cached
 in-process for CACHE_TTL_SECONDS because the data only changes every 5 minutes.
 The database session is READ ONLY with a statement timeout.
+
+Every request publishes ApiLatencyMs by route template (never the raw path, so the
+dimension stays bounded), and each Lambda invocation is traced in X-Ray and logged
+as JSON with the API Gateway request id as the correlation id.
 """
 
 import hmac
@@ -25,13 +29,15 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 import psycopg
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Response
+from aws_lambda_powertools.logging import correlation_paths
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from mangum import Mangum
 from pydantic import BaseModel, Field
 
 from . import config, db, queries
 from .copilot import agent
 from .copilot.tools import Region
+from .observability import MetricUnit, emit, entry_point
 from .rag import get_retriever
 
 app = FastAPI(
@@ -96,6 +102,20 @@ def require_api_key(x_api_key: Annotated[str | None, Header()] = None) -> None:
         return  # local development: auth disabled
     if not x_api_key or not hmac.compare_digest(x_api_key, expected):
         raise HTTPException(status_code=401, detail="missing or invalid x-api-key")
+
+
+@app.middleware("http")
+async def record_latency(request: Request, call_next):
+    started = time.perf_counter()
+    response = await call_next(request)
+    route = request.scope.get("route")
+    emit(
+        "ApiLatencyMs",
+        round((time.perf_counter() - started) * 1000, 1),
+        MetricUnit.Milliseconds,
+        route=getattr(route, "path", "unmatched"),
+    )
+    return response
 
 
 # ---------- routes ----------
@@ -223,4 +243,9 @@ def ask(body: AskRequest, conn: Conn):
 
 app.include_router(v1)
 
-handler = Mangum(app, lifespan="off")
+_mangum = Mangum(app, lifespan="off")
+
+
+@entry_point(correlation_id_path=correlation_paths.API_GATEWAY_HTTP)
+def handler(event, context):
+    return _mangum(event, context)
