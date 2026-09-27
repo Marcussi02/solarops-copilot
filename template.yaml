@@ -170,6 +170,22 @@ Resources:
           Properties:
             ScheduleExpression: rate(15 minutes)
 
+  DispatchFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: solarops.handlers.dispatch_handler
+      Description: Loads next-day AEMO dispatch outcomes (curtailment ground truth)
+      MemorySize: 1024
+      Timeout: 300
+      Policies:
+        - SSMParameterReadPolicy:
+            ParameterName: !Ref DatabaseUrlParam
+      Events:
+        Every6Hours:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: rate(6 hours) # the daily file's publish time varies
+
   RetentionFunction:
     Type: AWS::Serverless::Function
     Properties:

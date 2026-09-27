@@ -53,12 +53,13 @@ def test_poll_handler_queues_pending_files_in_batches(seeded, monkeypatch, aws_e
     ]  # 24 files
     monkeypatch.setattr(handlers, "get_conn", lambda: seeded)
     monkeypatch.setattr(handlers.nemweb, "list_files", lambda: files)
+    monkeypatch.setattr(handlers.pipeline, "sync_prices", lambda conn: 5)
     with mock_aws():
         queue_url = boto3.client("sqs").create_queue(QueueName="ingest")["QueueUrl"]
         monkeypatch.setenv("QUEUE_URL", queue_url)
         monkeypatch.setenv("MAX_FILES_PER_POLL", "20")
 
-        assert handlers.poll_handler({}, None) == {"queued": 20}
+        assert handlers.poll_handler({}, None) == {"queued": 20, "prices": 5}
 
         attrs = boto3.client("sqs").get_queue_attributes(
             QueueUrl=queue_url, AttributeNames=["ApproximateNumberOfMessages"]
@@ -89,3 +90,17 @@ def test_failed_connection_forgets_cached_secret(monkeypatch):
     with pytest.raises(ValueError):
         handlers.get_conn()
     assert config.database_url.cache_info().currsize == 0
+
+
+def test_price_sync_failure_does_not_block_polling(seeded, monkeypatch, aws_env):
+    monkeypatch.setattr(handlers, "get_conn", lambda: seeded)
+    monkeypatch.setattr(handlers.nemweb, "list_files", lambda: [])
+
+    def broken(conn):
+        raise RuntimeError("nemweb down")
+
+    monkeypatch.setattr(handlers.pipeline, "sync_prices", broken)
+    with mock_aws():
+        url = boto3.client("sqs").create_queue(QueueName="ingest")["QueueUrl"]
+        monkeypatch.setenv("QUEUE_URL", url)
+        assert handlers.poll_handler({}, None) == {"queued": 0, "prices": None}

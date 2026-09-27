@@ -58,7 +58,7 @@ def test_eval_check_catches_dropped_region():
 def test_tool_specs_expose_bounded_json_schema():
     specs = {s["name"]: s for s in tools.tool_specs()}
     assert set(specs) == {"underperformers", "facility_performance", "fleet_summary",
-                          "find_facilities", "search_docs"}
+                          "find_facilities", "search_docs", "curtailed_farms"}
     hours = specs["fleet_summary"]["input_schema"]["properties"]["hours"]
     assert hours["maximum"] == 168 and hours["minimum"] == 1
 

@@ -10,7 +10,7 @@ Look at neighbouring farms in the same region at the same interval. If most of t
 
 ## Step 3: rule out curtailment and constraints
 
-Check the regional price and the farm's dispatch target for the interval. Negative prices or a binding network constraint explain a flat ceiling below capacity and are not equipment faults. Record the curtailed energy separately so it does not distort availability reporting.
+Check the interval's status first: likely_curtailed or curtailed means SolarOps already found negative prices or a binding dispatch cap. Otherwise check the regional price and the farm's dispatch target for the interval. Negative prices or a binding network constraint explain a flat ceiling below capacity and are not equipment faults. Record the curtailed energy separately so it does not distort availability reporting.
 
 ## Step 4: read the shape of the output
 

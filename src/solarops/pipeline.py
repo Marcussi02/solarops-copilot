@@ -8,7 +8,7 @@ from collections.abc import Callable
 
 import psycopg
 
-from . import db, nemweb, registry, weather
+from . import db, dispatch, nemweb, registry, weather
 
 logger = logging.getLogger(__name__)
 
@@ -85,3 +85,34 @@ def backfill_weather(conn: psycopg.Connection, hours: int, fetch=None) -> int:
         def fetch(sites):
             return weather.fetch_recent(sites, hours)
     return db.upsert_weather(conn, fetch(sites))
+
+
+def sync_prices(
+    conn: psycopg.Connection, listing: list[str] | None = None, max_files: int = 12, download=None
+) -> int:
+    """Load regional prices for recent 5-minute intervals not yet recorded."""
+    listing = dispatch.list_price_files() if listing is None else listing
+    download = download or dispatch.download_price_file
+    stored = 0
+    for name in pending_files(conn, listing, max_files):
+        prices = dispatch.parse_prices(download(name))
+        stored += db.ingest_prices(conn, name, dispatch.price_file_interval(name), prices)
+    return stored
+
+
+def sync_unit_dispatch(
+    conn: psycopg.Connection, listing: list[str] | None = None, max_files: int = 2, download=None
+) -> dict:
+    """Load yesterday's per-unit dispatch outcomes (published once a day)."""
+    listing = dispatch.list_next_day_files() if listing is None else listing
+    download = download or dispatch.download_next_day_file
+    duids = db.known_duids(conn)
+    conn.commit()
+    if not duids:
+        raise RegistryEmptyError("solar_units is empty; run the registry sync first")
+    loaded = {}
+    for name in pending_files(conn, listing, max_files):
+        rows = dispatch.parse_unit_dispatch(download(name), duids)
+        loaded[name] = db.ingest_unit_dispatch(conn, name, dispatch.next_day_file_date(name), rows)
+        logger.info("dispatch %s solar rows=%d", name, loaded[name])
+    return loaded

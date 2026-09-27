@@ -5,6 +5,7 @@
     GET  /v1/facilities                solar farms, optional ?region=
     GET  /v1/facilities/{code}         one farm: energy, peak, performance, hourly profile
     GET  /v1/underperformers           farms below expected output right now
+    GET  /v1/curtailed                 farms held back by dispatch caps or negative prices
     GET  /v1/fleet                     energy and performance per region
     GET  /v1/docs                      knowledge base documents and sections
     GET  /v1/docs/search?q=            retrieve cited passages from the knowledge base
@@ -153,6 +154,18 @@ def underperformers(
         response,
         ("under", threshold, limit, region),
         lambda: queries.underperformers(conn, threshold, limit, region),
+    )
+
+
+@v1.get("/curtailed", tags=["data"])
+def curtailed(
+    conn: Conn,
+    response: Response,
+    limit: Annotated[int, Query(ge=1, le=50)] = 10,
+    region: Region | None = None,
+):
+    return cached(
+        response, ("curtailed", limit, region), lambda: queries.curtailed_farms(conn, limit, region)
     )
 
 

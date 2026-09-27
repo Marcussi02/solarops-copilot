@@ -6,6 +6,7 @@ from importlib import resources
 
 import psycopg
 
+from .dispatch import RegionPrice, UnitDispatch
 from .nemweb import Reading
 from .registry import SolarUnit
 from .weather import Site, WeatherObs
@@ -142,15 +143,63 @@ def ingest_file(
             """,
             solar,
         )
-        cur.execute(
-            """
-            INSERT INTO ingested_files (file_name, interval_end, rows_total, rows_solar)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (file_name) DO NOTHING
-            """,
-            (file_name, interval_end, len(readings), len(solar)),
-        )
+        record_file(cur, file_name, interval_end, len(readings), len(solar))
     return len(solar)
+
+
+def record_file(
+    cur: psycopg.Cursor, file_name: str, interval_end: datetime, total: int, kept: int
+) -> None:
+    cur.execute(
+        """
+        INSERT INTO ingested_files (file_name, interval_end, rows_total, rows_solar)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (file_name) DO NOTHING
+        """,
+        (file_name, interval_end, total, kept),
+    )
+
+
+# ---------- dispatch outcomes (curtailment) ----------
+
+def ingest_prices(
+    conn: psycopg.Connection, file_name: str, interval_end: datetime, prices: list[RegionPrice]
+) -> int:
+    with conn.transaction(), conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO region_prices (region, interval_end, rrp) VALUES (%s, %s, %s)
+            ON CONFLICT (region, interval_end) DO UPDATE SET rrp = EXCLUDED.rrp
+            """,
+            [(p.region, p.interval_end, p.rrp) for p in prices],
+        )
+        record_file(cur, file_name, interval_end, len(prices), len(prices))
+    return len(prices)
+
+
+def ingest_unit_dispatch(
+    conn: psycopg.Connection, file_name: str, day: datetime, rows: list[UnitDispatch]
+) -> int:
+    with conn.transaction(), conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO unit_dispatch
+                (duid, interval_end, total_cleared, availability, uigf, semidispatch_cap)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (duid, interval_end) DO UPDATE SET
+                total_cleared    = EXCLUDED.total_cleared,
+                availability     = EXCLUDED.availability,
+                uigf             = EXCLUDED.uigf,
+                semidispatch_cap = EXCLUDED.semidispatch_cap
+            """,
+            [
+                (r.duid, r.interval_end, r.total_cleared, r.availability, r.uigf,
+                 r.semidispatch_cap)
+                for r in rows
+            ],
+        )
+        record_file(cur, file_name, day, len(rows), len(rows))
+    return len(rows)
 
 
 # ---------- weather ----------
@@ -216,6 +265,8 @@ def prune(conn: psycopg.Connection, days: int) -> dict:
         for table, column in (
             ("scada_readings", "interval_end"),
             ("weather_obs", "observed_at"),
+            ("region_prices", "interval_end"),
+            ("unit_dispatch", "interval_end"),
             ("ingested_files", "interval_end"),
         ):
             cur = conn.execute(f"DELETE FROM {table} WHERE {column} < {cutoff}", (days,))

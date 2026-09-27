@@ -121,3 +121,8 @@ def test_ask_knowledge_question_returns_sources(client):
     assert body["tool"] == "search_docs" and body["sources"]
     assert body["sources"][0]["id"].startswith("curtailment#")
     assert "[1]" in body["answer"]
+
+
+def test_curtailed_endpoint(client):
+    assert client.get("/v1/curtailed").status_code == 401
+    assert client.get("/v1/curtailed?limit=5", headers=KEY).json() == []
