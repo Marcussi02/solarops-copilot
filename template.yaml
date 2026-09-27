@@ -214,6 +214,13 @@ Resources:
       DefaultRouteSettings: # rate limiting at the edge, before any Lambda runs
         ThrottlingBurstLimit: 20
         ThrottlingRateLimit: 10
+      RouteSettings: # unauthenticated routes get a tighter budget of their own
+        "GET /public/{proxy+}":
+          ThrottlingBurstLimit: 10
+          ThrottlingRateLimit: 5
+        "GET /dashboard":
+          ThrottlingBurstLimit: 10
+          ThrottlingRateLimit: 5
       CorsConfiguration:
         AllowOrigins: ["*"]
         AllowMethods: [GET, POST]
@@ -261,6 +268,19 @@ Resources:
             ApiId: !Ref HttpApi
             Path: /{proxy+}
             Method: ANY
+        # Explicit routes so RouteSettings can throttle the public surface separately.
+        Public:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /public/{proxy+}
+            Method: GET
+        Dashboard:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /dashboard
+            Method: GET
 
   # ---------------- observability ----------------
 
@@ -495,6 +515,9 @@ Resources:
       AlarmActions: !If [HasAlarmEmail, [!Ref AlarmTopic], !Ref AWS::NoValue]
 
 Outputs:
+  DashboardPage:
+    Description: Public live dashboard
+    Value: !Sub https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/dashboard
   ApiUrl:
     Description: Base URL of the HTTP API (try /health and /docs)
     Value: !Sub https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com
