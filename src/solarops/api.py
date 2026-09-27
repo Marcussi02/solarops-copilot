@@ -3,7 +3,7 @@
     GET  /health                       liveness + data freshness (public)
     GET  /dashboard                    live fleet dashboard, one self-contained HTML page (public)
     GET  /public/status                data freshness and farm count (public)
-    GET  /public/fleet?hours=24        energy and performance per region (public)
+    GET  /public/fleet                 energy and performance per region, last 24 h (public)
     GET  /public/underperformers       farms below expected output right now (public)
     GET  /public/curtailed             farms held back by dispatch caps or prices (public)
     GET  /v1/status                    pipeline counters
@@ -18,8 +18,9 @@
 
 /v1 routes need an `x-api-key` header when API_KEY is configured. /public routes are
 unauthenticated: read-only aggregates from the same query catalogue, with fixed
-limits, cached for 5 minutes in-process and by clients (Cache-Control), and throttled
-harder per route at API Gateway. Rate limiting is enforced by API Gateway throttling
+windows and limits (no client input reaches the query or the cache key), cached for
+5 minutes in-process and by clients (Cache-Control), and throttled harder per route
+at API Gateway. Rate limiting is enforced by API Gateway throttling
 (see template.yaml), and read endpoints are cached in-process for CACHE_TTL_SECONDS
 because the data only changes every 5 minutes.
 The database session is READ ONLY with a statement timeout.
@@ -110,6 +111,7 @@ def cached(response: Response, key: tuple, compute: Callable[[], object], store=
 # Public data is refreshed at most every 5 minutes, whatever CACHE_TTL_SECONDS says.
 PUBLIC_TTL_SECONDS = 300
 PUBLIC_LIMIT = 20
+PUBLIC_FLEET_HOURS = 24
 public_cache = TTLCache(PUBLIC_TTL_SECONDS, maxsize=64)
 
 
@@ -173,11 +175,13 @@ def public_status(conn: Conn, response: Response):
 
 
 @public.get("/fleet")
-def public_fleet(
-    conn: Conn, response: Response, hours: Annotated[int, Query(ge=1, le=168)] = 24
-):
+def public_fleet(conn: Conn, response: Response):
+    """Fixed 24-hour window: one cache entry, so query strings can't bypass the cache."""
     return cached(
-        response, ("public_fleet", hours), lambda: queries.fleet_summary(conn, hours), public_cache
+        response,
+        ("public_fleet",),
+        lambda: queries.fleet_summary(conn, PUBLIC_FLEET_HOURS),
+        public_cache,
     )
 
 

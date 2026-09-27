@@ -16,7 +16,7 @@ ROWS = [
     ("2026/09/25 12:00:00", "TESTSF2", 20.0),
     ("2026/09/25 12:00:00", "OTHERSF1", 150.0),
 ]
-PUBLIC = ["/public/status", "/public/fleet?hours=24", "/public/underperformers",
+PUBLIC = ["/public/status", "/public/fleet", "/public/underperformers",
           "/public/curtailed"]
 
 
@@ -58,17 +58,27 @@ def test_public_data_is_aggregate_and_reuses_the_catalogue(client):
     assert status["data_lag_minutes"] > 0
     assert "files" not in status and "readings" not in status  # pipeline internals stay private
 
-    fleet = client.get("/public/fleet?hours=24").json()
+    fleet = client.get("/public/fleet").json()
     assert {r["region"] for r in fleet} == {"NSW1", "QLD1"}
     assert client.get("/public/underperformers").json()[0]["facility_code"] == "TESTSF"
     assert client.get("/public/curtailed").json() == []
 
 
-def test_public_rejects_out_of_range_and_ignores_unknown_parameters(client):
-    assert client.get("/public/fleet?hours=0").status_code == 422
-    assert client.get("/public/fleet?hours=999").status_code == 422
-    # Fixed limits: callers cannot ask for bigger result sets.
+def test_public_ignores_client_parameters(client):
+    # Fixed windows and limits: callers cannot widen the query or ask for more rows.
+    assert client.get("/public/fleet?hours=999").status_code == 200
     assert client.get("/public/underperformers?limit=50000").status_code == 200
+    params = client.get("/openapi.json").json()["paths"]["/public/fleet"]["get"]
+    assert not params.get("parameters")
+
+
+def test_public_fleet_query_string_cannot_bypass_the_cache(client, seeded):
+    first = client.get("/public/fleet").json()
+    assert first
+    seeded.execute("DELETE FROM scada_readings")
+    seeded.commit()
+    for path in ("/public/fleet?hours=1", "/public/fleet?hours=168", "/public/fleet?x=1"):
+        assert client.get(path).json() == first, path  # one cache entry for every variant
 
 
 def test_public_server_cache_holds_for_its_ttl(client, seeded):
@@ -95,7 +105,7 @@ def test_dashboard_is_a_self_contained_html_page(client):
     assert resp.headers["cache-control"] == "public, max-age=300"
     html = resp.text
     assert "<title>SolarOps live fleet</title>" in html
-    for path in ("public/status", "public/fleet?hours=24", "public/underperformers",
+    for path in ("public/status", '"public/fleet"', "public/underperformers",
                  "public/curtailed"):
         assert path in html
     assert "prefers-color-scheme: dark" in html and 'name="viewport"' in html
