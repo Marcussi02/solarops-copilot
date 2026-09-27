@@ -35,7 +35,7 @@ Real response from a run on live AEMO data (26 Sep 2026):
 
 The same run answered *"How did the fleet do in the last 8 hours?"* with **37,907.7 MWh from 114 farms across NSW, QLD, VIC and SA**. It ingested 96 five-minute files (11,712 readings) in about 100 seconds.
 
-> **Status:** Phase 1 (ingestion) ✅ · Phase 2 (API, copilot, evals, AWS deploy) ✅ · Phase 3 (RAG over an O&M knowledge base, with citations and retrieval evals) ✅ · Next: MCP server. See the [Roadmap](#roadmap).
+> **Status:** Phase 1 (ingestion) ✅ · Phase 2 (API, copilot, evals, AWS deploy) ✅ · Phase 3 (RAG over an O&M knowledge base, with citations and retrieval evals) ✅ · Phase 4 (MCP server) ✅ · Next: curtailment-aware scoring. See the [Roadmap](#roadmap).
 
 ## Architecture
 
@@ -134,6 +134,27 @@ PYTHONPATH=src python -m solarops.cli docs "tracker rows stuck on a windy day"
 
 The first untuned run scored hit@3 0.97. The one miss exposed a stemming bug ("prices" and "price" didn't match), and fixing it took hit@3 to 1.00. A test also checks that every question in the set routes to `search_docs`, so knowledge questions never fall through to a data query.
 
+## MCP server
+
+The same tool catalogue is exposed over the [Model Context Protocol](https://modelcontextprotocol.io), so any MCP-capable assistant or IDE can query live farm data and the knowledge base directly:
+
+```json
+{
+  "mcpServers": {
+    "solarops": {
+      "command": "python",
+      "args": ["-m", "solarops.mcp_server"],
+      "env": {"PYTHONPATH": "src", "DATABASE_URL": "postgresql://..."}
+    }
+  }
+}
+```
+
+- **One tool registry, three interfaces.** REST, the copilot and MCP all call `copilot/tools.py`, so bounds, validation and the read-only, 5-second-timeout session are identical everywhere.
+- **Tools, not the copilot.** An MCP client is already a language model, so it gets the bounded tools and does its own reasoning, rather than a model talking to a model.
+- **Two validation layers.** The MCP SDK checks arguments against each tool's JSON schema, then pydantic enforces the same bounds before any query runs. Invalid calls come back as errors and are never executed.
+- `search_docs` needs no database, so the knowledge base works even when Postgres is unreachable.
+
 ## API
 
 OpenAPI docs are served at `/docs`. The `/v1` routes need an `x-api-key` header.
@@ -223,7 +244,7 @@ These are deliberate simplifications, found and measured against live data:
 - [ ] **Curtailment-aware scoring.** Join AEMO `DISPATCH_UNIT_SOLUTION` semi-dispatch caps so economic curtailment isn't reported as a fault.
 - [x] **Phase 3: RAG.** O&M knowledge base, BM25 with optional hybrid embeddings, enforced citations, retrieval evals as a CI gate.
 - [ ] **Manufacturer documents.** Ingest inverter and tracker manuals (PDF) for the specific equipment at each site, where licences allow.
-- [ ] **Phase 4: MCP server.** The same tool catalogue exposed over the Model Context Protocol.
+- [x] **Phase 4: MCP server.** The same tool catalogue exposed over the Model Context Protocol, with tests over an in-memory MCP session.
 - [ ] **Phase 5: observability.** Tracing, and cost and latency dashboards for the copilot.
 
 ## Data sources and terms

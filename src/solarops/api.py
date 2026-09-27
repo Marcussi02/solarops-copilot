@@ -44,19 +44,11 @@ app = FastAPI(
 _conn: psycopg.Connection | None = None
 
 
-def _open_read_only() -> psycopg.Connection:
-    conn = db.connect_configured()
-    conn.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
-    conn.execute("SET statement_timeout = '5s'")
-    conn.commit()
-    return conn
-
-
 def get_conn() -> Iterator[psycopg.Connection]:
     """One read-only connection per warm Lambda container, rolled back on error."""
     global _conn
     if _conn is None or _conn.closed or _conn.broken:
-        _conn = _open_read_only()
+        _conn = db.connect_read_only()
     try:
         yield _conn
     except Exception:
