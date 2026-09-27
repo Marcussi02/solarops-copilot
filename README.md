@@ -169,7 +169,7 @@ Live deployment: [interactive docs](https://h12xi690he.execute-api.ap-southeast-
 | `GET /health` | Liveness and data freshness (`data_lag_minutes`). Public. |
 | `GET /dashboard` | Live fleet dashboard: one self-contained HTML page, no external requests. Public. |
 | `GET /public/status` | Latest interval, data lag, farm and unit counts. Public. |
-| `GET /public/fleet?hours=24` | Energy and average performance per NEM region. Public. |
+| `GET /public/fleet` | Energy and average performance per NEM region over the last 24 hours (fixed window). Public. |
 | `GET /public/underperformers` | Up to 20 farms below expected output at the latest interval. Public. |
 | `GET /public/curtailed` | Up to 20 farms held back by dispatch caps or negative prices. Public. |
 | `GET /v1/status` | Pipeline counters: units, files, readings, latest interval |

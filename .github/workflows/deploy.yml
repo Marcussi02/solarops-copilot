@@ -80,7 +80,7 @@ jobs:
           echo "::add-mask::$key"
           curl -fsS "$url/health"
           curl -fsS "$url/public/status"
-          curl -fsS -o /dev/null "$url/public/fleet?hours=24"
+          curl -fsS -o /dev/null "$url/public/fleet"
           curl -fsS "$url/dashboard" | grep -q "<title>SolarOps live fleet</title>"
           test "$(curl -s -o /dev/null -w '%{http_code}' "$url/v1/status")" = 401  # still keyed
           curl -fsS -o /dev/null -H "x-api-key: $key" "$url/v1/curtailed"

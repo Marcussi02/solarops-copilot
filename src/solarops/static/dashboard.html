@@ -381,7 +381,7 @@
 
   async function refresh() {
     const results = await Promise.allSettled([
-      get("public/status"), get("public/fleet?hours=24"), get("public/underperformers"), get("public/curtailed"),
+      get("public/status"), get("public/fleet"), get("public/underperformers"), get("public/curtailed"),
     ]);
     const [status, fleet, under, curt] = results;
     if (status.status === "fulfilled") renderStatus(status.value);
