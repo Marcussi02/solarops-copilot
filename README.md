@@ -35,6 +35,10 @@ Real response from a run on live AEMO data (26 Sep 2026):
 
 The same run answered *"How did the fleet do in the last 8 hours?"* with **37,907.7 MWh from 114 farms across NSW, QLD, VIC and SA**. It ingested 96 five-minute files (11,712 readings) in about 100 seconds.
 
+**[Live dashboard](https://h12xi690he.execute-api.ap-southeast-2.amazonaws.com/dashboard)**: fleet energy and performance by region, underperforming and curtailed farms, refreshed every 5 minutes from the public API.
+
+[![SolarOps live fleet dashboard](docs/dashboard.png)](https://h12xi690he.execute-api.ap-southeast-2.amazonaws.com/dashboard)
+
 > **Status:** Phase 1 (ingestion) ✅ · Phase 2 (API, copilot, evals, AWS deploy) ✅ · Phase 3 (RAG over an O&M knowledge base, with citations and retrieval evals) ✅ · Phase 4 (MCP server) ✅ · Curtailment-aware scoring ✅ · Phase 5 (observability) ✅ · Public live dashboard ✅. See the [Roadmap](#roadmap).
 
 ## Architecture
@@ -160,7 +164,7 @@ The same tool catalogue is exposed over the [Model Context Protocol](https://mod
 
 OpenAPI docs are served at `/docs`. The `/v1` routes need an `x-api-key` header. The `/public` routes and `/dashboard` don't: they serve aggregates only, from the same query catalogue with fixed limits. Responses are cached for 5 minutes on the server and by clients (`Cache-Control: max-age=300`), and API Gateway throttles them per route (burst 10, 5 requests/s).
 
-Live deployment: [interactive docs](https://h12xi690he.execute-api.ap-southeast-2.amazonaws.com/docs) · [health check](https://h12xi690he.execute-api.ap-southeast-2.amazonaws.com/health)
+Live deployment: [dashboard](https://h12xi690he.execute-api.ap-southeast-2.amazonaws.com/dashboard) · [interactive docs](https://h12xi690he.execute-api.ap-southeast-2.amazonaws.com/docs) · [health check](https://h12xi690he.execute-api.ap-southeast-2.amazonaws.com/health)
 
 ![OpenAPI docs for the SolarOps Copilot API](docs/api-docs.png)
 
