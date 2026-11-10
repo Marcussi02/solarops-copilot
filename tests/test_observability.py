@@ -200,11 +200,11 @@ def client(loaded, monkeypatch):
     config.api_key.cache_clear()
 
 
-def test_api_latency_uses_route_template_not_raw_path(client, capsys, in_lambda):
+def test_api_latency_is_one_metric_without_per_route_dimension(client, capsys, in_lambda):
     assert client.get("/v1/facilities/TESTSF", headers={"x-api-key": "test-key"}).is_success
     client.get("/no/such/path")
-    routes = [m["dimensions"]["route"] for m in emf(capsys)["ApiLatencyMs"]]
-    assert routes == ["/v1/facilities/{code}", "unmatched"]
+    dims = [m["dimensions"] for m in emf(capsys)["ApiLatencyMs"]]
+    assert dims == [{"service": "solarops"}, {"service": "solarops"}]
 
 
 @pytest.fixture

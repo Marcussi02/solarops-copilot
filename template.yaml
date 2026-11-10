@@ -46,9 +46,30 @@ Parameters:
     Type: String
     Default: ""
     Description: Optional email address for alarm notifications
+  IngestionEnabled:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      "false" pauses every scheduled job (poll, weather, dispatch, registry), so the
+      stack costs close to nothing between uses. The API keeps serving stored data.
+  CreateDashboard:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      CloudWatch dashboard. Off by default: one with more than 50 metrics is billed
+      about US$3/month, which alone is most of a US$5 budget.
+  LogRetentionDays:
+    Type: Number
+    Default: 14
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90]
+    Description: Days to keep Lambda logs in CloudWatch (without this they are kept forever)
 
 Conditions:
   HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
+  IngestionOn: !Equals [!Ref IngestionEnabled, "true"]
+  MakeDashboard: !Equals [!Ref CreateDashboard, "true"]
 
 Globals:
   Function:
@@ -57,9 +78,10 @@ Globals:
     CodeUri: src/
     MemorySize: 256
     Timeout: 60
-    Tracing: Active # X-Ray; SAM adds the write permissions
+    # No X-Ray tracing: it runs on every scheduled invocation, users or not.
     Environment:
       Variables:
+        POWERTOOLS_TRACE_DISABLED: "true"
         DATABASE_URL_PARAM: !Sub /${DatabaseUrlParam}
         OPENELECTRICITY_API_KEY_PARAM: !Sub /${OpenElectricityKeyParam}
         RAW_BUCKET: !Ref RawBucket
@@ -84,11 +106,9 @@ Resources:
         RestrictPublicBuckets: true
       LifecycleConfiguration:
         Rules:
-          - Id: TierThenExpireRawFiles
+          # No Standard-IA tier: these ~15 KB files would be billed as 128 KB each there.
+          - Id: ExpireRawFiles
             Status: Enabled
-            Transitions:
-              - StorageClass: STANDARD_IA
-                TransitionInDays: 30
             ExpirationInDays: 365
 
   IngestDLQ:
@@ -107,6 +127,8 @@ Resources:
   PollFunction:
     Type: AWS::Serverless::Function
     Properties:
+      LoggingConfig:
+        LogGroup: !Ref PollLogs
       Handler: solarops.handlers.poll_handler
       Description: Lists new NEMWeb SCADA files and queues them
       Policies:
@@ -115,14 +137,19 @@ Resources:
         - SSMParameterReadPolicy:
             ParameterName: !Ref DatabaseUrlParam
       Events:
-        Every5Minutes:
+        Every15Minutes:
           Type: ScheduleV2
           Properties:
-            ScheduleExpression: rate(5 minutes)
+            # Each poll queues every unloaded file from the last 3 hours, so polling
+            # every 15 minutes loses no data and runs a third as often as every 5.
+            ScheduleExpression: rate(15 minutes)
+            State: !If [IngestionOn, ENABLED, DISABLED]
 
   IngestFunction:
     Type: AWS::Serverless::Function
     Properties:
+      LoggingConfig:
+        LogGroup: !Ref IngestLogs
       Handler: solarops.handlers.ingest_handler
       Description: Downloads, archives and loads one SCADA file per message
       Policies:
@@ -146,6 +173,8 @@ Resources:
   RegistryFunction:
     Type: AWS::Serverless::Function
     Properties:
+      LoggingConfig:
+        LogGroup: !Ref RegistryLogs
       Handler: solarops.handlers.registry_handler
       Description: Refreshes the solar farm registry
       Policies:
@@ -158,24 +187,31 @@ Resources:
           Type: ScheduleV2
           Properties:
             ScheduleExpression: cron(0 18 * * ? *) # 04:00 NEM time
+            State: !If [IngestionOn, ENABLED, DISABLED]
 
   WeatherFunction:
     Type: AWS::Serverless::Function
     Properties:
+      LoggingConfig:
+        LogGroup: !Ref WeatherLogs
       Handler: solarops.handlers.weather_handler
       Description: Records current irradiance at every solar farm
       Policies:
         - SSMParameterReadPolicy:
             ParameterName: !Ref DatabaseUrlParam
       Events:
-        Every15Minutes:
+        Hourly:
           Type: ScheduleV2
           Properties:
-            ScheduleExpression: rate(15 minutes)
+            # Every run also re-reads the last 3 hours, so hourly keeps the series whole.
+            ScheduleExpression: rate(1 hour)
+            State: !If [IngestionOn, ENABLED, DISABLED]
 
   DispatchFunction:
     Type: AWS::Serverless::Function
     Properties:
+      LoggingConfig:
+        LogGroup: !Ref DispatchLogs
       Handler: solarops.handlers.dispatch_handler
       Description: Loads next-day AEMO dispatch outcomes (curtailment ground truth)
       MemorySize: 1024
@@ -188,10 +224,13 @@ Resources:
           Type: ScheduleV2
           Properties:
             ScheduleExpression: rate(6 hours) # the daily file's publish time varies
+            State: !If [IngestionOn, ENABLED, DISABLED]
 
   RetentionFunction:
     Type: AWS::Serverless::Function
     Properties:
+      LoggingConfig:
+        LogGroup: !Ref RetentionLogs
       Handler: solarops.handlers.retention_handler
       Description: Deletes telemetry older than RetentionDays from Postgres
       Environment:
@@ -229,6 +268,8 @@ Resources:
   ApiFunction:
     Type: AWS::Serverless::Function
     Properties:
+      LoggingConfig:
+        LogGroup: !Ref ApiLogs
       Handler: solarops.api.handler
       Description: Read-only HTTP API, tool-calling copilot and knowledge-base retrieval
       MemorySize: 512
@@ -282,12 +323,57 @@ Resources:
             Path: /dashboard
             Method: GET
 
+  # ---------------- logs (kept LogRetentionDays, not forever) ----------------
+
+  PollLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}/poll
+      RetentionInDays: !Ref LogRetentionDays
+
+  IngestLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}/ingest
+      RetentionInDays: !Ref LogRetentionDays
+
+  RegistryLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}/registry
+      RetentionInDays: !Ref LogRetentionDays
+
+  WeatherLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}/weather
+      RetentionInDays: !Ref LogRetentionDays
+
+  DispatchLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}/dispatch
+      RetentionInDays: !Ref LogRetentionDays
+
+  RetentionLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}/retention
+      RetentionInDays: !Ref LogRetentionDays
+
+  ApiLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}/api
+      RetentionInDays: !Ref LogRetentionDays
+
   # ---------------- observability ----------------
 
   # Custom metrics are written as EMF log lines by solarops/observability.py
   # (namespace SolarOps, dimension service=solarops, plus route / reason where noted).
   Dashboard:
     Type: AWS::CloudWatch::Dashboard
+    Condition: MakeDashboard
     Properties:
       DashboardName: !Sub ${AWS::StackName}
       DashboardBody: !Sub |
@@ -314,7 +400,7 @@ Resources:
               "period": 300,
               "metrics": [
                 ["AWS/ApiGateway", "Latency", "ApiId", "${HttpApi}", {"label": "API Gateway p95"}],
-                [{"expression": "SEARCH('{SolarOps,service,route} MetricName=\"ApiLatencyMs\"', 'p95', 300)", "id": "routes", "label": ""}]
+                ["SolarOps", "ApiLatencyMs", "service", "solarops", {"label": "Lambda p95"}]
               ]}},
             {"type": "metric", "x": 0, "y": 6, "width": 12, "height": 6, "properties": {
               "title": "Copilot latency (ms)",
@@ -365,7 +451,7 @@ Resources:
               "stacked": false,
               "stat": "Maximum",
               "period": 300,
-              "annotations": {"horizontal": [{"label": "stale", "value": 30}]},
+              "annotations": {"horizontal": [{"label": "stale", "value": 45}]},
               "metrics": [
                 ["SolarOps", "IngestLagMinutes", "service", "solarops", {"label": "lag"}]
               ]}},
@@ -480,9 +566,10 @@ Resources:
 
   StaleDataAlarm:
     Type: AWS::CloudWatch::Alarm
+    Condition: IngestionOn # paused ingestion is stale on purpose
     Properties:
       AlarmDescription: >-
-        Latest SCADA interval is more than 30 minutes old. Missing data also alarms:
+        Latest SCADA interval is more than 45 minutes old. Missing data also alarms:
         it means the poller itself has stopped reporting.
       Namespace: SolarOps
       MetricName: IngestLagMinutes
@@ -490,9 +577,9 @@ Resources:
         - Name: service
           Value: solarops
       Statistic: Maximum
-      Period: 300
-      EvaluationPeriods: 3
-      Threshold: 30
+      Period: 900 # one poll
+      EvaluationPeriods: 2
+      Threshold: 45
       ComparisonOperator: GreaterThanThreshold
       TreatMissingData: breaching
       AlarmActions: !If [HasAlarmEmail, [!Ref AlarmTopic], !Ref AWS::NoValue]
@@ -528,5 +615,6 @@ Outputs:
   DeadLetterQueueUrl:
     Value: !Ref IngestDLQ
   DashboardUrl:
+    Condition: MakeDashboard
     Description: CloudWatch dashboard for the API, copilot, LLM spend and ingestion
     Value: !Sub https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${Dashboard}

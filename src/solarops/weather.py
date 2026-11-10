@@ -3,7 +3,7 @@
 Open-Meteo accepts comma-separated coordinates and returns a list of results,
 so all farms are fetched in a handful of requests.
 
-- `fetch_current`: 15-minute "current" conditions, polled every 15 minutes.
+- `fetch_current`: 15-minute "current" conditions, polled hourly.
 - `fetch_recent`: hourly history for the last few hours, used to backfill gaps
   (a missed poll, a first deploy) so past intervals can still be scored.
 """

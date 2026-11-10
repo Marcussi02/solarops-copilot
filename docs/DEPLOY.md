@@ -55,6 +55,8 @@ On GitHub, go to the repo → **Settings** → *Secrets and variables* → **Act
 | `ALARM_EMAIL` | Optional. The address for DLQ, backlog and API-error alarms. |
 | `LLM_PROVIDER` | Optional. `none` (default) or `bedrock`, see step 6. |
 | `EMBEDDINGS_PROVIDER` | Optional. `none` (default, BM25 keyword retrieval) or `bedrock` for hybrid retrieval with Titan Text Embeddings v2. |
+| `INGESTION_ENABLED` | Optional. `true` (default) or `false` to pause every scheduled job between uses. |
+| `CREATE_DASHBOARD` | Optional. `false` (default) or `true` for the CloudWatch dashboard (about US$3/month). |
 
 These are *variables*, not secrets, because none of them are sensitive. The actual secrets stay in SSM.
 
@@ -68,7 +70,7 @@ These are *variables*, not secrets, because none of them are sensitive. The actu
 
 The run summary shows the API URL. Open `<url>/docs` for the interactive API docs.
 
-- **Ingestion** starts on the next 5-minute tick. Weather fills in within 15 minutes.
+- **Ingestion** starts on the next 15-minute tick. Weather fills in within the hour.
 - **Performance indexes** only appear in Australian daylight. AEST is Malaysia time + 2 hours.
 - **Alarm emails:** if you set `ALARM_EMAIL`, confirm the subscription email that AWS sends.
 
@@ -86,15 +88,25 @@ PYTHONPATH=src python -m solarops.evals --provider bedrock
 
 ## Cost
 
-Expect about **US$0/month**.
+Expect about **US$0–1/month**. The scheduled jobs run whether anyone uses the app or not, so they are what you pay for, not your users.
 
-- **Lambda:** around 20k invocations and about 10k GB-seconds a month, well inside the always-free tier.
-- **SQS, EventBridge Scheduler, SSM standard parameters and three CloudWatch alarms:** all free at this scale.
+- **Lambda:** about 10k invocations a month (15-minute poll, hourly weather), well inside the always-free tier.
+- **SQS, EventBridge Scheduler, SSM standard parameters and four CloudWatch alarms:** all free at this scale.
+- **CloudWatch metrics and logs:** about 9 custom metrics (10 are free) and logs kept 14 days (`LogRetentionDays`).
+- **No X-Ray and no CloudWatch dashboard by default.** A dashboard with over 50 metrics costs about US$3/month; turn it on with `CREATE_DASHBOARD=true`.
 - **API Gateway HTTP API:** free for the first 12 months at this volume, then about a dollar per million requests.
-- **S3:** stores about 15 KB per 5-minute file, roughly 150 MB a year, which costs cents.
+- **S3:** about 150 MB a year of 15 KB files in Standard storage, which costs cents.
 - **Bedrock** (only if enabled) costs fractions of a cent per question.
 
+**Pause between uses.** Set `INGESTION_ENABLED=false` and run **Deploy**: every schedule stops and the API keeps serving the data already stored. Set it back to `true` a few hours before you need fresh data.
+
 The budget from step 2 emails you at 50% of US$5 actual spend, and when the forecast passes 100%.
+
+## Upgrading from a version before the cost fixes
+
+1. Update the `solarops-bootstrap` stack with the new `infra/bootstrap.yaml` first (step 2): the deploy role now needs permission to create the Lambda log groups.
+2. Run **Deploy**.
+3. Optional: in **CloudWatch → Log groups**, delete the old `/aws/lambda/solarops-copilot-…Function-…` groups. They have no expiry, and the functions now log to `/aws/lambda/solarops-copilot/<name>` instead.
 
 ## Tear down
 

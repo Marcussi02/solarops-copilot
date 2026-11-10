@@ -1,9 +1,9 @@
 """AWS Lambda entry points.
 
-    EventBridge (5 min)  -> poll_handler -> SQS -> ingest_handler -> PostgreSQL
+    EventBridge (15 min) -> poll_handler -> SQS -> ingest_handler -> PostgreSQL
                                                       \\-> S3 raw archive
     EventBridge (daily)  -> registry_handler
-    EventBridge (15 min) -> weather_handler
+    EventBridge (hourly) -> weather_handler
     EventBridge (6 h)    -> dispatch_handler (next-day dispatch outcomes, curtailment)
     EventBridge (daily)  -> retention_handler
     API Gateway          -> solarops.api.handler (read-only API + copilot)
