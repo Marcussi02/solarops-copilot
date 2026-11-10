@@ -50,9 +50,12 @@ jobs:
         env:
           LLM_PROVIDER: ${{ vars.LLM_PROVIDER || 'none' }}
           EMBEDDINGS_PROVIDER: ${{ vars.EMBEDDINGS_PROVIDER || 'none' }}
+          INGESTION_ENABLED: ${{ vars.INGESTION_ENABLED || 'true' }}
+          CREATE_DASHBOARD: ${{ vars.CREATE_DASHBOARD || 'false' }}
           ALARM_EMAIL: ${{ vars.ALARM_EMAIL }}
         run: |
           overrides="LlmProvider=${LLM_PROVIDER} EmbeddingsProvider=${EMBEDDINGS_PROVIDER}"
+          overrides="$overrides IngestionEnabled=${INGESTION_ENABLED} CreateDashboard=${CREATE_DASHBOARD}"
           if [ -n "$ALARM_EMAIL" ]; then overrides="$overrides AlarmEmail=${ALARM_EMAIL}"; fi
           sam deploy --stack-name "$STACK" --resolve-s3 --capabilities CAPABILITY_IAM \
             --no-confirm-changeset --no-fail-on-empty-changeset \

@@ -25,9 +25,9 @@ at API Gateway. Rate limiting is enforced by API Gateway throttling
 because the data only changes every 5 minutes.
 The database session is READ ONLY with a statement timeout.
 
-Every request publishes ApiLatencyMs by route template (never the raw path, so the
-dimension stays bounded), and each Lambda invocation is traced in X-Ray and logged
-as JSON with the API Gateway request id as the correlation id.
+Every request publishes one ApiLatencyMs metric (no per-route dimension, to keep the
+CloudWatch custom-metric count low), and each Lambda invocation is logged as JSON with
+the API Gateway request id as the correlation id.
 """
 
 import hmac
@@ -127,12 +127,12 @@ def require_api_key(x_api_key: Annotated[str | None, Header()] = None) -> None:
 async def record_latency(request: Request, call_next):
     started = time.perf_counter()
     response = await call_next(request)
-    route = request.scope.get("route")
+    # One metric for the whole API, not one per route: every extra dimension value is
+    # a separate CloudWatch custom metric billed monthly (~US$0.30 each).
     emit(
         "ApiLatencyMs",
         round((time.perf_counter() - started) * 1000, 1),
         MetricUnit.Milliseconds,
-        route=getattr(route, "path", "unmatched"),
     )
     return response
 

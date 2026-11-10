@@ -131,6 +131,24 @@ Resources:
                   - cloudwatch:DescribeAlarms
                   - cloudwatch:TagResource
                 Resource: "*"
+              - Sid: LogGroups
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:DeleteLogGroup
+                  - logs:PutRetentionPolicy
+                  - logs:DeleteRetentionPolicy
+                  - logs:TagResource
+                  - logs:UntagResource
+                  - logs:ListTagsForResource
+                  - logs:TagLogGroup
+                  - logs:UntagLogGroup
+                  - logs:ListTagsLogGroup
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${StackName}/*
+              - Sid: LogGroupReads
+                Effect: Allow
+                Action: logs:DescribeLogGroups
+                Resource: "*"
               - Sid: Dashboard
                 Effect: Allow
                 Action:

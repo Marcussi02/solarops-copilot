@@ -45,7 +45,7 @@ The same run answered *"How did the fleet do in the last 8 hours?"* with **37,90
 
 ```
                    ┌──────────────────────┐
- EventBridge 5 min │ PollFunction         │ lists NEMWeb, skips files already ingested
+ EventBridge 15 min│ PollFunction         │ lists NEMWeb, skips files already ingested
  ─────────────────►│                      ├──────────────┐
                    └──────────────────────┘              ▼
                                                   ┌─────────────┐  5 failures  ┌─────┐
@@ -58,7 +58,7 @@ The same run answered *"How did the fleet do in the last 8 hours?"* with **37,90
                    └──────────────────────┘       │ upsert (1 txn)       │
                                                   └──────────┬───────────┘
  EventBridge daily ─► RegistryFunction ──┐                   ▼
- EventBridge 15 min ► WeatherFunction ───┼────────► PostgreSQL (Supabase)
+ EventBridge 1 h ───► WeatherFunction ───┼────────► PostgreSQL (Supabase)
  EventBridge 6 h ───► DispatchFunction ──┤          solar_units · scada_readings · weather_obs
  EventBridge daily ─► RetentionFunction ─┘          region_prices · unit_dispatch · ingested_files
                                                     facility_performance (view, with status)
@@ -190,19 +190,19 @@ Live deployment: [dashboard](https://h12xi690he.execute-api.ap-southeast-2.amazo
 
 Built on [AWS Lambda Powertools](https://docs.powertools.aws.dev/lambda/python/) ([`observability.py`](src/solarops/observability.py)), and inert outside Lambda, so the CLI and the MCP server's stdio stay clean.
 
-- **Tracing.** X-Ray active tracing on every function, with subsegments for each catalogue query and write, each model call, and AWS SDK and HTTP calls. Copilot traces are annotated with `tool`, `provider` and `fallback`.
+- **Tracing.** X-Ray is off by default to keep the stack inside the free tier. The code is instrumented (subsegments for each catalogue query and write, model call and AWS SDK/HTTP call), so set `Tracing: Active` and remove `POWERTOOLS_TRACE_DISABLED` in `template.yaml` to turn it back on.
 - **Logs.** JSON lines with the function request id plus a correlation id: the API Gateway request id for the API, and the SQS message id for ingestion. Events are never logged, and the formatter masks connection-string credentials, API keys and bearer tokens, even inside tracebacks.
 - **Metrics** (namespace `SolarOps`, written as EMF log lines, so there are no `PutMetricData` calls):
 
 | Metric | Source | Dimensions |
 |---|---|---|
-| `ApiLatencyMs` | every API request | `route` (the template, e.g. `/v1/facilities/{code}`) |
+| `ApiLatencyMs` | every API request | none (one metric for the whole API, to keep the metric count low) |
 | `CopilotLatencyMs`, `LlmInputTokens`, `LlmOutputTokens`, `LlmCostUsd` | every copilot answer; tokens come from the Bedrock/OpenAI usage report and cost from list prices (`LLM_PRICE_*_PER_MTOK` to override), both 0 with `LLM_PROVIDER=none` | |
 | `CopilotFallbacks` | whenever the copilot falls back to the rules router | `reason` (exception type) |
-| `IngestLagMinutes`, `CurtailedFarms` | every poll (5 min) | |
+| `IngestLagMinutes`, `CurtailedFarms` | every poll (15 min) | |
 | `RowsIngested` | every ingest batch | |
 
-The stack deploys a CloudWatch dashboard (stack output `DashboardUrl`) with API requests, errors and p95 latency by route; copilot latency and fallbacks; LLM tokens and cost; ingest lag and rows; DLQ depth; curtailed farms; and Lambda errors and p95 duration per function. A **staleness alarm** fires when `IngestLagMinutes` stays above 30 for three 5-minute periods, or when the metric stops arriving, and notifies the same email topic as the other alarms.
+With `CreateDashboard=true` (off by default, it costs about US$3/month) the stack deploys a CloudWatch dashboard (stack output `DashboardUrl`) with API requests, errors and p95 latency; copilot latency and fallbacks; LLM tokens and cost; ingest lag and rows; DLQ depth; curtailed farms; and Lambda errors and p95 duration per function. A **staleness alarm** fires when `IngestLagMinutes` stays above 45 for two 15-minute periods, or when the metric stops arriving, and notifies the same email topic as the other alarms.
 
 ## Design decisions
 
@@ -257,7 +257,7 @@ Pushes to `main` deploy automatically once CI passes. The one-time setup is abou
 
 The workflow builds with SAM, deploys, loads the solar farm registry, and smoke-tests `/health` and `/v1/ask`.
 
-**Expected cost: about US$0/month.** Around 20k Lambda invocations a month, SQS, EventBridge Scheduler, SSM, X-Ray traces, one dashboard and four alarms all fit the AWS free tiers, and Supabase's free Postgres holds 30 days of telemetry. Custom metrics are free for the first 10. Each extra `route` or `reason` series is billed pro rata for only the hours it receives data (US$0.30 per metric-month), so light API traffic adds cents. Bedrock, if you turn it on, costs fractions of a cent per question, and `LlmCostUsd` shows exactly how much.
+**Expected cost: about US$0–1/month.** The scheduled jobs run whether anyone uses the app or not, so they are kept light: a 15-minute poll, hourly weather, no X-Ray, no CloudWatch dashboard by default, about 9 custom metrics (the first 10 are free), and logs kept 14 days. Supabase's free Postgres holds 30 days of telemetry. Between uses, deploy with `IngestionEnabled=false` (repository variable `INGESTION_ENABLED=false`) to pause every schedule; the API keeps serving the stored data. Bedrock, if you turn it on, costs fractions of a cent per question, and `LlmCostUsd` shows exactly how much.
 
 ## Known limitations
 
